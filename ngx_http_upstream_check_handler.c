@@ -1635,6 +1635,7 @@ ngx_http_upstream_check_status_handler(ngx_http_request_t *r)
     ngx_uint_t                      down_count;
     ngx_uint_t                      up_count;
     /*ngx_uint_t                      auto_refresh=120;*/ /* Autorefresh/reload page every xx seconds */
+                                    /* Should be set in "check_status 120;" in nginx configuration */
     ngx_chain_t                     out;
     ngx_http_check_peer_t          *peer;
     ngx_http_check_peers_t         *peers;
@@ -1705,7 +1706,7 @@ ngx_http_upstream_check_status_handler(ngx_http_request_t *r)
             "<html xmlns=\"http://www.w3.org/1999/xhtml\">\n"
             "<head>\n"
             "  <title>Nginx http upstream check status: Up: %ui, Down: %ui, Total: %ui</title>\n"
-            "  <meta http-equiv=\"refresh\" content=\"120\">"
+            "  <meta http-equiv=\"refresh\" content=\"30\">"
             "</head>\n"
             "<body>\n"
             "<h1>Nginx http upstream check status</h1>\n"
@@ -1750,7 +1751,7 @@ ngx_http_upstream_check_status_handler(ngx_http_request_t *r)
 
     b->last = ngx_snprintf(b->last, b->end - b->last,
             "</table>\n"
-            "<p>Page auto refresh every 120 seconds</p>\n"
+            "<p>Page auto refresh every 30 seconds</p>\n"
             "</body>\n"
             "</html>\n"
             );
