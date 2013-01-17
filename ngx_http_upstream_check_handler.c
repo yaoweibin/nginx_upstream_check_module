@@ -1632,6 +1632,8 @@ ngx_http_upstream_check_status_handler(ngx_http_request_t *r)
     ngx_int_t                       rc;
     ngx_buf_t                      *b;
     ngx_uint_t                      i;
+    ngx_uint_t                      down_count;
+    ngx_uint_t                      up_count;
     ngx_chain_t                     out;
     ngx_http_check_peer_t          *peer;
     ngx_http_check_peers_t         *peers;
@@ -1686,12 +1688,22 @@ ngx_http_upstream_check_status_handler(ngx_http_request_t *r)
     out.buf = b;
     out.next = NULL;
 
+    down_count=0;
+    up_count=0;
+    for (i = 0; i < peers->peers.nelts; i++) {
+        if(peer_shm[i].down) {
+            down_count++;
+        } else {
+            up_count++;
+        }
+    }
+
     b->last = ngx_snprintf(b->last, b->end - b->last,
             "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\n"
             "\"http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd\">\n"
             "<html xmlns=\"http://www.w3.org/1999/xhtml\">\n"
             "<head>\n"
-            "  <title>Nginx http upstream check status</title>\n"
+            "  <title>Nginx http upstream check status: Up: %ui, Down: %ui, Total: %ui</title>\n"
             "</head>\n"
             "<body>\n"
             "<h1>Nginx http upstream check status</h1>\n"
@@ -1707,6 +1719,7 @@ ngx_http_upstream_check_status_handler(ngx_http_request_t *r)
             "    <th>Fall counts</th>\n"
             "    <th>Check type</th>\n"
             "  </tr>\n",
+            up_count, down_count, peers->peers.nelts,
             peers->peers.nelts, ngx_http_check_shm_generation);
 
     for (i = 0; i < peers->peers.nelts; i++) {
@@ -1732,8 +1745,14 @@ ngx_http_upstream_check_status_handler(ngx_http_request_t *r)
 
     b->last = ngx_snprintf(b->last, b->end - b->last,
             "</table>\n"
+            "<br></br>\n"
+            "<br></br>\n"
+            "<h2%s>Status: Up: %ui, Down: %ui, Total: %ui</h2>\n"
             "</body>\n"
-            "</html>\n");
+            "</html>\n"
+            ,down_count > 0 ? " style=\"color: #FF0000\"" : ""
+            ,up_count, down_count, peers->peers.nelts
+            );
 
     r->headers_out.status = NGX_HTTP_OK;
     r->headers_out.content_length_n = b->last - b->pos;
