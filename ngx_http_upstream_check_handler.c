@@ -544,10 +544,10 @@ ngx_http_check_send_handler(ngx_event_t *event)
                        size, ctx->send.last - ctx->send.pos);
 #endif
 
-        if (size >= 0) {
+        if (size > 0) {
             ctx->send.pos += size;
 
-        } else if (size == NGX_AGAIN) {
+        } else if (size == 0 || size == NGX_AGAIN) {
             return;
 
         } else {
@@ -659,6 +659,12 @@ ngx_http_check_recv_handler(ngx_event_t *event)
     switch (rc) {
 
     case NGX_AGAIN:
+        /* The peer has closed its half side of the connection. */
+        if (size == 0) {
+            ngx_http_check_status_update(peer, 0);
+            break;
+        }
+
         return;
 
     case NGX_ERROR:
