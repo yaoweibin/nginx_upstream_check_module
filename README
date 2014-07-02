@@ -17,6 +17,8 @@ Synopsis
             #check interval=3000 rise=2 fall=5 timeout=1000 type=http;
             #check_http_send "GET / HTTP/1.0\r\n\r\n";
             #check_http_expect_alive http_2xx http_3xx;
+
+            #check interval=3000 rise=2 fall=5 timeout=1000 type=fastcgi;
         }
 
         server {
@@ -83,6 +85,10 @@ Directives
 
         5.  *ajp* sends a AJP Cping packet, receives and parses the AJP
             Cpong response to diagnose if the upstream server is alive.
+
+        6.  *fastcgi* sends FastCGI request, receives and parses respons.
+            Determines FastCGI protocol errors. Checks Status: code.
+            Uses *check_http_expect_alive* parameter for upstream health check.
 
   check_http_send
     syntax: *check_http_send http_packet*
