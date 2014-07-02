@@ -10,6 +10,10 @@
 #include <ngx_http.h>
 #include "ngx_http_upstream_check_module.h"
 
+#ifndef NGX_HTTP_FASTCGI_BEGIN_REQUEST
+#include "ngx_http_upstream_check_fastcgi.h"
+#endif
+
 
 typedef struct {
     u_char major;
@@ -131,6 +135,8 @@ void ngx_http_check_free_peer(ngx_uint_t index);
 
 char * ngx_http_upstream_check_init_shm(ngx_conf_t *cf, void *conf);
 ngx_int_t ngx_http_check_add_timers(ngx_cycle_t *cycle);
+
+static ngx_int_t ngx_http_check_parse_status_line(ngx_http_check_ctx *ctx, ngx_buf_t *b, ngx_http_status_t *status);
 
 extern check_conf_t  ngx_check_types[];
 

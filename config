@@ -3,7 +3,7 @@ ngx_feature_name=
 ngx_feature_run=no
 ngx_feature_incs=
 ngx_feature_path="$ngx_addon_dir"
-ngx_feature_deps="$ngx_addon_dir/ngx_http_upstream_check_module.h $ngx_addon_dir/ngx_http_upstream_check_handler.h"
+ngx_feature_deps="$ngx_addon_dir/ngx_http_upstream_check_fastcgi.h $ngx_addon_dir/ngx_http_upstream_check_module.h $ngx_addon_dir/ngx_http_upstream_check_handler.h"
 ngx_check_src="$ngx_addon_dir/ngx_http_upstream_check_module.c $ngx_addon_dir/ngx_http_upstream_check_handler.c"
 ngx_feature_test="int a;"
 . auto/feature
