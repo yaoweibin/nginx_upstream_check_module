@@ -19,6 +19,13 @@ Synopsis
             #check_http_expect_alive http_2xx http_3xx;
 
             #check interval=3000 rise=2 fall=5 timeout=1000 type=fastcgi;
+            #check_fastcgi_param DOCUMENT_ROOT /home/test/www;
+            #check_fastcgi_param PATH_TRANSLATED /home/test/www/nginx_test.phtml;
+            #check_fastcgi_param SCRIPT_NAME /nginx_test.phtml;
+            #check_fastcgi_param SERVER_NAME local.dev.lan;
+            #check_fastcgi_param REQUEST_METHOD GET;
+            #check_fastcgi_param REMOTE_ADDR 127.0.0.1;
+            #check_fastcgi_param HTTP_HOST local.dev.lan;
         }
 
         server {
@@ -131,6 +138,16 @@ Directives
 
     description: Display the health checking servers' status by HTTP. This
     directive should be set in the http block.
+
+  check_fastcgi_param
+    syntax: *check_fastcgi_param PARAM_NAME PARAM_VALUE*
+
+    default: *none*
+
+    context: *upstream*
+
+    description: Set of *check_fastcgi_param* items describes FastCGI
+    request to test upstream.
 
 Installation
     Download the latest version of the release tarball of this module from
