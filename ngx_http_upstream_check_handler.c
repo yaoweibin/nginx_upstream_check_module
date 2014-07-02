@@ -1490,11 +1490,10 @@ ngx_http_upstream_check_process_fastcgi_header(ngx_http_check_fastcgi_ctx *ctx, 
 static ngx_int_t
 ngx_http_upstream_check_process_fastcgi_response(ngx_http_check_fastcgi_ctx *ctx, ngx_pool_t *pool)
 {
-    u_char                         *p, *msg, *start, *last;
-    size_t                          size;
-    ngx_str_t                      *status_line, *pattern;
-    ngx_int_t                       rc;
-    ngx_uint_t                      i;
+    u_char     *p, *msg, *start, *last;
+    size_t      size;
+    ngx_int_t   rc;
+    ngx_uint_t  i;
 
     for ( ;; ) {
 
