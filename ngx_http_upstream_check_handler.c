@@ -1506,7 +1506,7 @@ ngx_http_upstream_check_process_fastcgi_response(ngx_http_check_fastcgi_ctx *ctx
             if (ctx->fastcgi_type == NGX_HTTP_FASTCGI_END_REQUEST
                 && ctx->fastcgi_stdout_body == 1
             ) {
-                ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                ngx_log_debug0(NGX_LOG_ERR, ngx_cycle->log, 0,
                     "upstream_check: upstream sent end request FastCGI record"
                 );
                 return NGX_OK;
