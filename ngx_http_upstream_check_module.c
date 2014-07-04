@@ -19,6 +19,8 @@ static char * ngx_http_upstream_check_shm_size(ngx_conf_t *cf,
         ngx_command_t *cmd, void *conf);
 static char * ngx_http_upstream_check_status(ngx_conf_t *cf,
         ngx_command_t *cmd, void *conf);
+static char * ngx_http_upstream_check_fastcgi_param(ngx_conf_t *cf,
+        ngx_command_t *cmd, void *conf);
 
 static void *ngx_http_upstream_check_create_main_conf(ngx_conf_t *cf);
 static char *ngx_http_upstream_check_init_main_conf(ngx_conf_t *cf, void *conf);
@@ -71,6 +73,13 @@ static ngx_command_t  ngx_http_upstream_check_commands[] = {
     { ngx_string("check_status"),
       NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_NOARGS,
       ngx_http_upstream_check_status,
+      0,
+      0,
+      NULL },
+
+    { ngx_string("check_fastcgi_param"),
+      NGX_HTTP_UPS_CONF|NGX_CONF_TAKE2,
+      ngx_http_upstream_check_fastcgi_param,
       0,
       0,
       NULL },
@@ -416,6 +425,36 @@ ngx_http_upstream_check_status(ngx_conf_t *cf,
     return NGX_CONF_OK;
 }
 
+static char *
+ngx_http_upstream_check_fastcgi_param(ngx_conf_t *cf,
+        ngx_command_t *cmd, void *conf)
+{
+    ngx_str_t                           *value;
+    ngx_http_upstream_check_srv_conf_t  *ucscf;
+    ngx_keyval_t                        *param;
+
+    ucscf = ngx_http_conf_get_module_srv_conf(cf, ngx_http_upstream_check_module);
+
+    if (ucscf->fastcgi_params == NULL) {
+        ucscf->fastcgi_params = ngx_array_create(cf->pool, 4, sizeof(ngx_keyval_t));
+        if (ucscf->fastcgi_params == NULL) {
+            return NGX_CONF_ERROR;
+        }
+    }
+
+    param = ngx_array_push(ucscf->fastcgi_params);
+    if (param == NULL) {
+        return NGX_CONF_ERROR;
+    }
+
+    value = cf->args->elts;
+
+    param->key = value[1];
+    param->value = value[2];
+
+    return NGX_CONF_OK;
+}
+
 
 static void *
 ngx_http_upstream_check_create_main_conf(ngx_conf_t *cf)
@@ -528,6 +567,9 @@ ngx_http_upstream_check_init_srv_conf(ngx_conf_t *cf, void *conf)
             ucscf->code.status_alive = check->default_status_alive;
         }
     }
+
+    ucscf->fastcgi_send.data = NULL;
+    ucscf->fastcgi_send.len = 0;
 
     return NGX_CONF_OK;
 }

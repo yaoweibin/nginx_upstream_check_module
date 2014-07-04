@@ -10,6 +10,10 @@
 #include <ngx_http.h>
 #include "ngx_http_upstream_check_module.h"
 
+#ifndef NGX_HTTP_FASTCGI_BEGIN_REQUEST
+#include "ngx_http_upstream_check_fastcgi.h"
+#endif
+
 
 typedef struct {
     u_char major;
