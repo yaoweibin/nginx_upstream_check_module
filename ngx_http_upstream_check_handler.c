@@ -1453,7 +1453,7 @@ ngx_http_upstream_check_process_fastcgi_header(ngx_http_check_fastcgi_ctx *ctx, 
                 }
             }
 
-            if( i + 1 < i < ctx->fastcgi_split.len) {
+            if( i + 1 < ctx->fastcgi_split.len) {
               header_start = p + 1;
             }
         }

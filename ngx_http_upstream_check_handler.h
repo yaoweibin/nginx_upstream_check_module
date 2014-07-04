@@ -136,8 +136,6 @@ void ngx_http_check_free_peer(ngx_uint_t index);
 char * ngx_http_upstream_check_init_shm(ngx_conf_t *cf, void *conf);
 ngx_int_t ngx_http_check_add_timers(ngx_cycle_t *cycle);
 
-static ngx_int_t ngx_http_check_parse_status_line(ngx_http_check_ctx *ctx, ngx_buf_t *b, ngx_http_status_t *status);
-
 extern check_conf_t  ngx_check_types[];
 
 #endif //_NGX_HTTP_UPSTREAM_CHECK_HANDLER_H_INCLUDED_

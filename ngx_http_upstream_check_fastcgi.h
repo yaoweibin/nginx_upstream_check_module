@@ -83,6 +83,4 @@ typedef struct {
     unsigned                 fastcgi_large_stderr:1;
 } ngx_http_check_fastcgi_ctx;
 
-static ngx_int_t ngx_http_upstream_check_fastcgi_process(ngx_http_check_fastcgi_ctx *ctx, ngx_pool_t *pool);
-
 #endif /* _NGX_HTTP_UPSTREAM_CHECK_FASTCGI_H_INCLUDED_ */
