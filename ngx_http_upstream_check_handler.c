@@ -1659,14 +1659,15 @@ ngx_http_upstream_check_status_handler(ngx_http_request_t *r)
         return rc;
     }
 
-    //if (ACCEPTS_CONTENT_TYPE("application/json")) {
-	ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "requested json formatting");
+    if (ACCEPTS_CONTENT_TYPE("application/json")) {
+	ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "requested json formatting");
         r->headers_out.content_type.len = sizeof("application/json; charset=utf-8") - 1;
         r->headers_out.content_type.data = (u_char *) "application/json; charset=utf-8";
-    //} else {
-    //    r->headers_out.content_type.len = sizeof("text/html; charset=utf-8") - 1;
-    //    r->headers_out.content_type.data = (u_char *) "text/html; charset=utf-8";
-    //}
+    } else {
+	ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "requested html formatting");
+        r->headers_out.content_type.len = sizeof("text/html; charset=utf-8") - 1;
+        r->headers_out.content_type.data = (u_char *) "text/html; charset=utf-8";
+    }
     if (r->method == NGX_HTTP_HEAD) {
         r->headers_out.status = NGX_HTTP_OK;
 
@@ -1702,7 +1703,8 @@ ngx_http_upstream_check_status_handler(ngx_http_request_t *r)
     out.buf = b;
     out.next = NULL;
 
-    //if (ACCEPTS_CONTENT_TYPE("application/json")) {
+    if (ACCEPTS_CONTENT_TYPE("application/json")) {
+	    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "returning json formatting");
 	    b->last = ngx_snprintf(b->last, b->end - b->last,
 		    "{\"num_servers\":%ui ,\"generation\":%ui ,\"upstreams\":[",
 		    peers->peers.nelts, ngx_http_check_shm_generation);
@@ -1726,8 +1728,8 @@ ngx_http_upstream_check_status_handler(ngx_http_request_t *r)
 
 	    b->last = ngx_snprintf(b->last, b->end - b->last,
 		    "]}");
-/*	    
     } else {
+	    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "returning html formatting");
 	    b->last = ngx_snprintf(b->last, b->end - b->last,
 		    "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\n"
 		    "\"http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd\">\n"
@@ -1776,7 +1778,7 @@ ngx_http_upstream_check_status_handler(ngx_http_request_t *r)
 		    "</table>\n"
 		    "</body>\n"
 		    "</html>\n");
-    }*/
+    }
     r->headers_out.status = NGX_HTTP_OK;
     r->headers_out.content_length_n = b->last - b->pos;
 
