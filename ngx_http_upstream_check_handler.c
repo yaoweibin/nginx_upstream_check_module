@@ -107,6 +107,11 @@ static const char sslv3_client_hello_pkt[] = {
 static const char ajp_cping_packet[] ={0x12, 0x34, 0x00, 0x01, AJP_CPING, 0x00};
 static const char ajp_cpong_packet[] ={0x41, 0x42, 0x00, 0x01, AJP_CPONG};
 
+#define WANTS_CONTENT_TYPE(x) \
+	r->headers_in.accept != NULL && \
+	r->headers_in.accept->value.data != NULL && \
+	r->headers_in.accept->value.len == sizeof ((x)) - 1 && \
+	ngx_strcasecmp(r->headers_in.accept->value.data, (u_char *) (x)) == 0
 
 check_conf_t  ngx_check_types[] = {
     { NGX_HTTP_CHECK_TCP,
@@ -1654,9 +1659,14 @@ ngx_http_upstream_check_status_handler(ngx_http_request_t *r)
         return rc;
     }
 
-    r->headers_out.content_type.len = sizeof("text/html; charset=utf-8") - 1;
-    r->headers_out.content_type.data = (u_char *) "text/html; charset=utf-8";
-
+    if (WANTS_CONTENT_TYPE("application/json") {
+	ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "requested json formatting");
+        r->headers_out.content_type.len = sizeof("application/json; charset=utf-8") - 1;
+        r->headers_out.content_type.data = (u_char *) "application/json; charset=utf-8";
+    } else {
+        r->headers_out.content_type.len = sizeof("text/html; charset=utf-8") - 1;
+        r->headers_out.content_type.data = (u_char *) "text/html; charset=utf-8";
+    }
     if (r->method == NGX_HTTP_HEAD) {
         r->headers_out.status = NGX_HTTP_OK;
 
@@ -1692,55 +1702,80 @@ ngx_http_upstream_check_status_handler(ngx_http_request_t *r)
     out.buf = b;
     out.next = NULL;
 
-    b->last = ngx_snprintf(b->last, b->end - b->last,
-            "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\n"
-            "\"http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd\">\n"
-            "<html xmlns=\"http://www.w3.org/1999/xhtml\">\n"
-            "<head>\n"
-            "  <title>Nginx http upstream check status</title>\n"
-            "</head>\n"
-            "<body>\n"
-            "<h1>Nginx http upstream check status</h1>\n"
-            "<h2>Check upstream server number: %ui, generation: %ui</h2>\n"
-            "<table style=\"background-color:white\" cellspacing=\"0\" "
-            "       cellpadding=\"3\" border=\"1\">\n"
-            "  <tr bgcolor=\"#C0C0C0\">\n"
-            "    <th>Index</th>\n"
-            "    <th>Upstream</th>\n"
-            "    <th>Name</th>\n"
-            "    <th>Status</th>\n"
-            "    <th>Rise counts</th>\n"
-            "    <th>Fall counts</th>\n"
-            "    <th>Check type</th>\n"
-            "  </tr>\n",
-            peers->peers.nelts, ngx_http_check_shm_generation);
+    if (WANTS_CONTENT_TYPE("application/json") {
+	    b->last = ngx_snprintf(b->last, b->end - b->last,
+		    "{\"num_servers\":%ui ,\"generation\":%ui ,\"upstreams\":[",
+		    peers->peers.nelts, ngx_http_check_shm_generation);
 
-    for (i = 0; i < peers->peers.nelts; i++) {
-        b->last = ngx_snprintf(b->last, b->end - b->last,
-                "  <tr%s>\n"
-                "    <td>%ui</td>\n"
-                "    <td>%V</td>\n"
-                "    <td>%V</td>\n"
-                "    <td>%s</td>\n"
-                "    <td>%ui</td>\n"
-                "    <td>%ui</td>\n"
-                "    <td>%s</td>\n"
-                "  </tr>\n",
-                peer_shm[i].down ? " bgcolor=\"#FF0000\"" : "",
-                i,
-                peer[i].upstream_name,
-                &peer[i].peer_addr->name,
-                peer_shm[i].down ? "down" : "up",
-                peer_shm[i].rise_count,
-                peer_shm[i].fall_count,
-                peer[i].conf->check_type_conf->name);
+	    for (i = 0; i < peers->peers.nelts; i++) {
+		b->last = ngx_snprintf(b->last, b->end - b->last,
+			"{\"upstream\":\"%V\","
+			"\"name\":\"%V\","
+			"\"status\":\"%s\","
+			"\"rise_count\":%ui ,"
+			"\"fall_count\":%ui ,"
+			"\"check_type\":\"%s\"}%s",
+			peer[i].upstream_name,
+			&peer[i].peer_addr->name,
+			peer_shm[i].down ? "down" : "up",
+			peer_shm[i].rise_count,
+			peer_shm[i].fall_count,
+			peer[i].conf->check_type_conf->name,
+			(i == peers->peers.nelts) ? " " : ",");
+	    }
+
+	    b->last = ngx_snprintf(b->last, b->end - b->last,
+		    "]}");
+    } else {
+	    b->last = ngx_snprintf(b->last, b->end - b->last,
+		    "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\n"
+		    "\"http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd\">\n"
+		    "<html xmlns=\"http://www.w3.org/1999/xhtml\">\n"
+		    "<head>\n"
+		    "  <title>Nginx http upstream check status</title>\n"
+		    "</head>\n"
+		    "<body>\n"
+		    "<h1>Nginx http upstream check status</h1>\n"
+		    "<h2>Check upstream server number: %ui, generation: %ui</h2>\n"
+		    "<table style=\"background-color:white\" cellspacing=\"0\" "
+		    "       cellpadding=\"3\" border=\"1\">\n"
+		    "  <tr bgcolor=\"#C0C0C0\">\n"
+		    "    <th>Index</th>\n"
+		    "    <th>Upstream</th>\n"
+		    "    <th>Name</th>\n"
+		    "    <th>Status</th>\n"
+		    "    <th>Rise counts</th>\n"
+		    "    <th>Fall counts</th>\n"
+		    "    <th>Check type</th>\n"
+		    "  </tr>\n",
+		    peers->peers.nelts, ngx_http_check_shm_generation);
+
+	    for (i = 0; i < peers->peers.nelts; i++) {
+		b->last = ngx_snprintf(b->last, b->end - b->last,
+			"  <tr%s>\n"
+			"    <td>%ui</td>\n"
+			"    <td>%V</td>\n"
+			"    <td>%V</td>\n"
+			"    <td>%s</td>\n"
+			"    <td>%ui</td>\n"
+			"    <td>%ui</td>\n"
+			"    <td>%s</td>\n"
+			"  </tr>\n",
+			peer_shm[i].down ? " bgcolor=\"#FF0000\"" : "",
+			i,
+			peer[i].upstream_name,
+			&peer[i].peer_addr->name,
+			peer_shm[i].down ? "down" : "up",
+			peer_shm[i].rise_count,
+			peer_shm[i].fall_count,
+			peer[i].conf->check_type_conf->name);
+	    }
+
+	    b->last = ngx_snprintf(b->last, b->end - b->last,
+		    "</table>\n"
+		    "</body>\n"
+		    "</html>\n");
     }
-
-    b->last = ngx_snprintf(b->last, b->end - b->last,
-            "</table>\n"
-            "</body>\n"
-            "</html>\n");
-
     r->headers_out.status = NGX_HTTP_OK;
     r->headers_out.content_length_n = b->last - b->pos;
 
