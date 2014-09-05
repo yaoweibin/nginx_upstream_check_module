@@ -107,7 +107,7 @@ static const char sslv3_client_hello_pkt[] = {
 static const char ajp_cping_packet[] ={0x12, 0x34, 0x00, 0x01, AJP_CPING, 0x00};
 static const char ajp_cpong_packet[] ={0x41, 0x42, 0x00, 0x01, AJP_CPONG};
 
-#define WANTS_CONTENT_TYPE(x) \
+#define ACCEPTS_CONTENT_TYPE(x) \
 	r->headers_in.accept != NULL && \
 	r->headers_in.accept->value.data != NULL && \
 	r->headers_in.accept->value.len == sizeof ((x)) - 1 && \
@@ -1659,14 +1659,14 @@ ngx_http_upstream_check_status_handler(ngx_http_request_t *r)
         return rc;
     }
 
-    if (WANTS_CONTENT_TYPE("application/json")) {
+    //if (ACCEPTS_CONTENT_TYPE("application/json")) {
 	ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "requested json formatting");
         r->headers_out.content_type.len = sizeof("application/json; charset=utf-8") - 1;
         r->headers_out.content_type.data = (u_char *) "application/json; charset=utf-8";
-    } else {
-        r->headers_out.content_type.len = sizeof("text/html; charset=utf-8") - 1;
-        r->headers_out.content_type.data = (u_char *) "text/html; charset=utf-8";
-    }
+    //} else {
+    //    r->headers_out.content_type.len = sizeof("text/html; charset=utf-8") - 1;
+    //    r->headers_out.content_type.data = (u_char *) "text/html; charset=utf-8";
+    //}
     if (r->method == NGX_HTTP_HEAD) {
         r->headers_out.status = NGX_HTTP_OK;
 
@@ -1702,7 +1702,7 @@ ngx_http_upstream_check_status_handler(ngx_http_request_t *r)
     out.buf = b;
     out.next = NULL;
 
-    if (WANTS_CONTENT_TYPE("application/json")) {
+    //if (ACCEPTS_CONTENT_TYPE("application/json")) {
 	    b->last = ngx_snprintf(b->last, b->end - b->last,
 		    "{\"num_servers\":%ui ,\"generation\":%ui ,\"upstreams\":[",
 		    peers->peers.nelts, ngx_http_check_shm_generation);
@@ -1726,6 +1726,7 @@ ngx_http_upstream_check_status_handler(ngx_http_request_t *r)
 
 	    b->last = ngx_snprintf(b->last, b->end - b->last,
 		    "]}");
+/*	    
     } else {
 	    b->last = ngx_snprintf(b->last, b->end - b->last,
 		    "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\n"
@@ -1775,7 +1776,7 @@ ngx_http_upstream_check_status_handler(ngx_http_request_t *r)
 		    "</table>\n"
 		    "</body>\n"
 		    "</html>\n");
-    }
+    }*/
     r->headers_out.status = NGX_HTTP_OK;
     r->headers_out.content_length_n = b->last - b->pos;
 
