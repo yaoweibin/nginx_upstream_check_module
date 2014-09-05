@@ -1659,7 +1659,7 @@ ngx_http_upstream_check_status_handler(ngx_http_request_t *r)
         return rc;
     }
 
-    if (WANTS_CONTENT_TYPE("application/json") {
+    if (WANTS_CONTENT_TYPE("application/json")) {
 	ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "requested json formatting");
         r->headers_out.content_type.len = sizeof("application/json; charset=utf-8") - 1;
         r->headers_out.content_type.data = (u_char *) "application/json; charset=utf-8";
@@ -1702,7 +1702,7 @@ ngx_http_upstream_check_status_handler(ngx_http_request_t *r)
     out.buf = b;
     out.next = NULL;
 
-    if (WANTS_CONTENT_TYPE("application/json") {
+    if (WANTS_CONTENT_TYPE("application/json")) {
 	    b->last = ngx_snprintf(b->last, b->end - b->last,
 		    "{\"num_servers\":%ui ,\"generation\":%ui ,\"upstreams\":[",
 		    peers->peers.nelts, ngx_http_check_shm_generation);
