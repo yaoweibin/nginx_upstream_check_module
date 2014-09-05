@@ -1721,7 +1721,7 @@ ngx_http_upstream_check_status_handler(ngx_http_request_t *r)
 			peer_shm[i].rise_count,
 			peer_shm[i].fall_count,
 			peer[i].conf->check_type_conf->name,
-			(i < peers->peers.nelts) ? "," : " ");
+			(i < (peers->peers.nelts - 1)) ? "," : " ");
 	    }
 
 	    b->last = ngx_snprintf(b->last, b->end - b->last,
