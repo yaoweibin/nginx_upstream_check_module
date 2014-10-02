@@ -1640,6 +1640,10 @@ ngx_http_upstream_check_status_handler(ngx_http_request_t *r)
     ngx_int_t                       rc;
     ngx_buf_t                      *b;
     ngx_uint_t                      i;
+    ngx_uint_t                      down_count;
+    ngx_uint_t                      up_count;
+    /*ngx_uint_t                      auto_refresh=120;*/ /* Autorefresh/reload page every xx seconds */
+                                    /* Should be set in "check_status 120;" in nginx configuration */
     ngx_chain_t                     out;
     ngx_http_check_peer_t          *peer;
     ngx_http_check_peers_t         *peers;
@@ -1694,19 +1698,31 @@ ngx_http_upstream_check_status_handler(ngx_http_request_t *r)
     out.buf = b;
     out.next = NULL;
 
+    down_count=0;
+    up_count=0;
+    for (i = 0; i < peers->peers.nelts; i++) {
+        if(peer_shm[i].down) {
+            down_count++;
+        } else {
+            up_count++;
+        }
+    }
+
     b->last = ngx_snprintf(b->last, b->end - b->last,
             "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\n"
             "\"http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd\">\n"
             "<html xmlns=\"http://www.w3.org/1999/xhtml\">\n"
             "<head>\n"
-            "  <title>Nginx http upstream check status</title>\n"
+            "  <title>Nginx http upstream check status: Up: %ui, Down: %ui, Total: %ui</title>\n"
+            "  <meta http-equiv=\"refresh\" content=\"30\">"
             "</head>\n"
             "<body>\n"
             "<h1>Nginx http upstream check status</h1>\n"
             "<h2>Check upstream server number: %ui, generation: %ui</h2>\n"
+            "<p%s>Status: Up: %ui, Down: %ui, Total: %ui</p>\n"
             "<table style=\"background-color:white\" cellspacing=\"0\" "
             "       cellpadding=\"3\" border=\"1\">\n"
-            "  <tr bgcolor=\"#C0C0C0\">\n"
+            "  <tr bgcolor=\"%s\">\n"
             "    <th>Index</th>\n"
             "    <th>Upstream</th>\n"
             "    <th>Name</th>\n"
@@ -1715,7 +1731,10 @@ ngx_http_upstream_check_status_handler(ngx_http_request_t *r)
             "    <th>Fall counts</th>\n"
             "    <th>Check type</th>\n"
             "  </tr>\n",
-            peers->peers.nelts, ngx_http_check_shm_generation);
+            up_count, down_count, peers->peers.nelts,
+            peers->peers.nelts, ngx_http_check_shm_generation,
+            down_count > 0 ? " style=\"color: #FF0000\"" : "" ,up_count, down_count, peers->peers.nelts,
+            down_count > 0 ? "#CC0000" : "#33CC33");
 
     for (i = 0; i < peers->peers.nelts; i++) {
         b->last = ngx_snprintf(b->last, b->end - b->last,
@@ -1740,8 +1759,10 @@ ngx_http_upstream_check_status_handler(ngx_http_request_t *r)
 
     b->last = ngx_snprintf(b->last, b->end - b->last,
             "</table>\n"
+            "<p>Page auto refresh every 30 seconds</p>\n"
             "</body>\n"
-            "</html>\n");
+            "</html>\n"
+            );
 
     r->headers_out.status = NGX_HTTP_OK;
     r->headers_out.content_length_n = b->last - b->pos;
