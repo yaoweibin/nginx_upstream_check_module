@@ -124,7 +124,7 @@ Directives
     connection, the default vaule 1 indicates that nginx will certainly
     close the connection after a request.
 
-  check_fastcgi_param
+  check_fastcgi_param, check_fastcgi_param1, check_fastcgi_param2, check_fastcgi_param3, check_fastcgi_param4
     Syntax: *check_fastcgi_params parameter value*
 
     default: see below
@@ -138,6 +138,15 @@ Directives
           check_fastcgi_param "REQUEST_METHOD" "GET";
           check_fastcgi_param "REQUEST_URI" "/";
           check_fastcgi_param "SCRIPT_FILENAME" "index.php";
+          
+  check_fastcgi_path_translated  
+    Syntax: *check_fastcgi_path_translated value*
+
+    default: none
+
+    context: *upstream*
+
+    description: Base path for fastcgi_param PATH_TRANSLATED. Prepended on request
 
   check_shm_size
     syntax: *check_shm_size size*

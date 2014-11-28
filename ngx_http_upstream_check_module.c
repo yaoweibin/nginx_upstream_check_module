@@ -59,6 +59,8 @@ typedef struct {
     ngx_buf_t                                send;
     ngx_buf_t                                recv;
 
+    ngx_uint_t                               index;
+    ngx_uint_t                               multiple_status_ok;
     ngx_uint_t                               state;
     ngx_http_status_t                        status;
 
@@ -237,7 +239,10 @@ struct ngx_http_upstream_check_srv_conf_s {
         ngx_uint_t                           status_alive;
     } code;
 
-    ngx_array_t                             *fastcgi_params;
+    ngx_array_t                            **fastcgi_params;
+    ngx_uint_t                               fastcgi_params_count;
+    ngx_str_t                               *fastcgi_send;
+    ngx_str_t                                fastcgi_path_translated;
 
     ngx_uint_t                               default_down;
 };
@@ -333,7 +338,6 @@ static ngx_http_fastcgi_request_start_t  ngx_http_fastcgi_request_start = {
 
 };
 
-
 static ngx_int_t ngx_http_upstream_check_add_timers(ngx_cycle_t *cycle);
 
 static ngx_int_t ngx_http_upstream_check_peek_one_byte(ngx_connection_t *c);
@@ -360,8 +364,13 @@ static void ngx_http_upstream_check_http_reinit(
     ngx_http_upstream_check_peer_t *peer);
 
 static ngx_buf_t *ngx_http_upstream_check_create_fastcgi_request(
-    ngx_pool_t *pool, ngx_str_t *params, ngx_uint_t num);
+    ngx_pool_t *pool, ngx_str_t *path_translated, ngx_str_t *params, ngx_uint_t num);
 
+
+static ngx_int_t ngx_http_upstream_check_fastcgi_init(
+    ngx_http_upstream_check_peer_t *peer);
+static void ngx_http_upstream_check_fastcgi_reinit(
+    ngx_http_upstream_check_peer_t *peer);
 static ngx_int_t ngx_http_upstream_check_fastcgi_parse(
     ngx_http_upstream_check_peer_t *peer);
 static ngx_int_t ngx_http_upstream_check_fastcgi_process_record(
@@ -530,6 +539,41 @@ static ngx_command_t  ngx_http_upstream_check_commands[] = {
       0,
       NULL },
 
+    { ngx_string("check_fastcgi_param1"),
+      NGX_HTTP_UPS_CONF|NGX_CONF_TAKE2,
+      ngx_http_upstream_check_fastcgi_params,
+      0,
+      0,
+      NULL },
+
+    { ngx_string("check_fastcgi_param2"),
+      NGX_HTTP_UPS_CONF|NGX_CONF_TAKE2,
+      ngx_http_upstream_check_fastcgi_params,
+      0,
+      0,
+      NULL },
+
+    { ngx_string("check_fastcgi_param3"),
+      NGX_HTTP_UPS_CONF|NGX_CONF_TAKE2,
+      ngx_http_upstream_check_fastcgi_params,
+      0,
+      0,
+      NULL },
+
+    { ngx_string("check_fastcgi_param4"),
+      NGX_HTTP_UPS_CONF|NGX_CONF_TAKE2,
+      ngx_http_upstream_check_fastcgi_params,
+      0,
+      0,
+      NULL },
+
+    { ngx_string("check_fastcgi_path_translated"),
+      NGX_HTTP_UPS_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_str_slot,
+      NGX_HTTP_SRV_CONF_OFFSET,
+      offsetof(ngx_http_upstream_check_srv_conf_t, fastcgi_path_translated),
+      NULL },
+
     { ngx_string("check_shm_size"),
       NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE1,
       ngx_http_upstream_check_shm_size,
@@ -580,12 +624,12 @@ ngx_module_t  ngx_http_upstream_check_module = {
 
 
 static ngx_str_t fastcgi_default_request;
+static ngx_str_t fastcgi_path_translated = ngx_string("PATH_TRANSLATED");
 static ngx_str_t fastcgi_default_params[] = {
     ngx_string("REQUEST_METHOD"), ngx_string("GET"),
     ngx_string("REQUEST_URI"), ngx_string("/"),
     ngx_string("SCRIPT_FILENAME"), ngx_string("index.php"),
 };
-
 
 #define NGX_SSL_RANDOM "NGX_HTTP_CHECK_SSL_HELLO\n\n\n\n"
 
@@ -670,9 +714,9 @@ static ngx_check_conf_t  ngx_check_types[] = {
       0,
       ngx_http_upstream_check_send_handler,
       ngx_http_upstream_check_recv_handler,
-      ngx_http_upstream_check_http_init,
+      ngx_http_upstream_check_fastcgi_init,
       ngx_http_upstream_check_fastcgi_parse,
-      ngx_http_upstream_check_http_reinit,
+      ngx_http_upstream_check_fastcgi_reinit,
       1,
       0 },
 
@@ -1366,6 +1410,7 @@ ngx_http_upstream_check_recv_handler(ngx_event_t *event)
     u_char                         *new_buf;
     ssize_t                         size, n;
     ngx_int_t                       rc;
+    ngx_str_t                       s;
     ngx_connection_t               *c;
     ngx_http_upstream_check_ctx_t  *ctx;
     ngx_http_upstream_check_peer_t *peer;
@@ -1462,16 +1507,43 @@ ngx_http_upstream_check_recv_handler(ngx_event_t *event)
         return;
 
     case NGX_ERROR:
-        ngx_log_error(NGX_LOG_ERR, event->log, 0,
-                      "check protocol %V error with peer: %V ",
-                      &peer->conf->check_type_conf->name,
-                      &peer->check_peer_addr->name);
+        /*
+         * if we have more than one fastcgi_params set
+         * policy all should fail works
+         */
+        ngx_str_set(&s, "fastcgi");
+        if (peer->conf->check_type_conf == ngx_http_get_check_type_conf(&s)) {
+            if (ctx->index >= peer->conf->fastcgi_params_count - 1) {
+              if (ctx->multiple_status_ok == 0) {
+                ngx_log_error(NGX_LOG_ERR, event->log, 0,
+                    "check protocol fastcgi_last error with peer: %V ",
+                    &peer->check_peer_addr->name);
+                ngx_http_upstream_check_status_update(peer, 0);
+              } else {
+                ngx_http_upstream_check_status_update(peer, 1);
+              }
+            }
+        } else {
+            ngx_log_error(NGX_LOG_ERR, event->log, 0,
+                "check protocol %V error with peer: %V ",
+                &peer->conf->check_type_conf->name,
+                &peer->check_peer_addr->name);
 
-        ngx_http_upstream_check_status_update(peer, 0);
+            ngx_http_upstream_check_status_update(peer, 0);
+        }
         break;
 
     case NGX_OK:
-        /* fall through */
+        ngx_str_set(&s, "fastcgi");
+        ctx->multiple_status_ok = 1;
+        ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0, "ctx->multiple_status_ok = 1;");
+        if (peer->conf->check_type_conf != ngx_http_get_check_type_conf(&s)
+            || ctx->index >= peer->conf->fastcgi_params_count - 1
+        ) {
+            ngx_http_upstream_check_status_update(peer, 1);
+            ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0, "ngx_http_upstream_check_status_update(peer, 1);");
+        }
+        break;
 
     default:
         ngx_http_upstream_check_status_update(peer, 1);
@@ -1509,7 +1581,6 @@ ngx_http_upstream_check_http_init(ngx_http_upstream_check_peer_t *peer)
 
     return NGX_OK;
 }
-
 
 static ngx_int_t
 ngx_http_upstream_check_http_parse(ngx_http_upstream_check_peer_t *peer)
@@ -1674,6 +1745,57 @@ ngx_http_upstream_check_fastcgi_process_record(
     return NGX_AGAIN;
 }
 
+static ngx_int_t
+ngx_http_upstream_check_fastcgi_init(ngx_http_upstream_check_peer_t *peer)
+{
+    ngx_http_upstream_check_ctx_t       *ctx;
+    ngx_http_upstream_check_srv_conf_t  *ucscf;
+
+    ctx = peer->check_data;
+    ucscf = peer->conf;
+
+    ctx->index = 0;
+    ctx->state = 0;
+    ctx->multiple_status_ok = 0;
+
+    while (ucscf->fastcgi_send[ctx->index].len == 0) {
+      ++ctx->index;
+    }
+    ctx->send.start = ctx->send.pos = (u_char *)ucscf->fastcgi_send[ctx->index].data;
+    ctx->send.end = ctx->send.last = ctx->send.start + ucscf->fastcgi_send[ctx->index].len;
+
+    ctx->recv.start = ctx->recv.pos = NULL;
+    ctx->recv.end = ctx->recv.last = NULL;
+
+    ngx_memzero(&ctx->status, sizeof(ngx_http_status_t));
+
+    return NGX_OK;
+}
+
+static void
+ngx_http_upstream_check_fastcgi_reinit(ngx_http_upstream_check_peer_t *peer)
+{
+    ngx_http_upstream_check_ctx_t  *ctx;
+
+    ctx = peer->check_data;
+
+    if (++ctx->index >= peer->conf->fastcgi_params_count) {
+      ctx->index = 0;
+      ctx->multiple_status_ok = 0;
+    }
+    while (peer->conf->fastcgi_send[ctx->index].len == 0) {
+      ++ctx->index;
+    }
+
+    ctx->state = 0;
+
+    ctx->send.start = ctx->send.pos = (u_char *)peer->conf->fastcgi_send[ctx->index].data;
+    ctx->send.end = ctx->send.last = ctx->send.start + peer->conf->fastcgi_send[ctx->index].len;
+
+    ctx->recv.pos = ctx->recv.last = ctx->recv.start;
+
+    ngx_memzero(&ctx->status, sizeof(ngx_http_status_t));
+}
 
 static ngx_int_t
 ngx_http_upstream_check_fastcgi_parse(ngx_http_upstream_check_peer_t *peer)
@@ -3250,25 +3372,53 @@ ngx_http_upstream_check_http_send(ngx_conf_t *cf, ngx_command_t *cmd,
     return NGX_CONF_OK;
 }
 
-
 static char *
 ngx_http_upstream_check_fastcgi_params(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf)
 {
     ngx_str_t                           *value, *k, *v;
     ngx_http_upstream_check_srv_conf_t  *ucscf;
+    size_t                               i, index;
+    ngx_array_t                        **fastcgi_params_old;
 
     value = cf->args->elts;
 
     ucscf = ngx_http_conf_get_module_srv_conf(cf,
                                               ngx_http_upstream_check_module);
 
-    k = ngx_array_push(ucscf->fastcgi_params);
+    if ( cmd->name.len == ngx_strlen("check_fastcgi_param") ) {
+        index = 0;
+    } else {
+        index = ngx_atoi(cmd->name.data + ngx_strlen("check_fastcgi_param"), 1);
+    }
+
+    if ( index >= ucscf->fastcgi_params_count ) {
+      fastcgi_params_old = ucscf->fastcgi_params;
+
+      ucscf->fastcgi_params = ngx_pcalloc(cf->pool, (index + 1) * sizeof(ngx_array_t *));
+      if (ucscf->fastcgi_params == NULL) {
+          return NGX_CONF_ERROR;
+      }
+
+      ngx_memcpy(ucscf->fastcgi_params, fastcgi_params_old, ucscf->fastcgi_params_count * sizeof(ngx_array_t *));
+      ngx_pfree(cf->pool, fastcgi_params_old);
+
+      for( i = ucscf->fastcgi_params_count; i <= index; ++i ) {
+        ucscf->fastcgi_params[i] = ngx_array_create(cf->pool, 2 * 4, sizeof(ngx_str_t));
+        if (ucscf->fastcgi_params[i] == NULL) {
+            return NGX_CONF_ERROR;
+        }
+      }
+
+      ucscf->fastcgi_params_count = index + 1;
+    }
+
+    k = ngx_array_push(ucscf->fastcgi_params[index]);
     if (k == NULL) {
         return NGX_CONF_ERROR;
     }
 
-    v = ngx_array_push(ucscf->fastcgi_params);
+    v = ngx_array_push(ucscf->fastcgi_params[index]);
     if (v == NULL) {
         return NGX_CONF_ERROR;
     }
@@ -3439,20 +3589,30 @@ ngx_http_upstream_check_create_main_conf(ngx_conf_t *cf)
 
 static ngx_buf_t *
 ngx_http_upstream_check_create_fastcgi_request(ngx_pool_t *pool,
-    ngx_str_t *params, ngx_uint_t num)
+    ngx_str_t *path_translated, ngx_str_t *params, ngx_uint_t num)
 {
     size_t                      size, len, padding;
     ngx_buf_t                  *b;
     ngx_str_t                  *k, *v;
     ngx_uint_t                  i, j;
     ngx_http_fastcgi_header_t  *h;
+    size_t                      value_len;
+    ngx_uint_t                  use_base_path;
 
     len = 0;
     for (i = 0, j = 0; i < num; i++, j = i * 2) {
         k = &params[j];
         v = &params[j + 1];
+        value_len = v->len;
 
-        len += 1 + k->len + ((v->len > 127) ? 4 : 1) + v->len;
+        if ( path_translated && path_translated->len > 0
+            && fastcgi_path_translated.len == k->len
+            && ngx_strncasecmp(k->data, fastcgi_path_translated.data, k->len) == 0
+        ) {
+          value_len += path_translated->len;
+        }
+
+        len += 1 + k->len + ((value_len > 127) ? 4 : 1) + value_len;
     }
 
     padding = 8 - len % 8;
@@ -3494,6 +3654,15 @@ ngx_http_upstream_check_create_fastcgi_request(ngx_pool_t *pool,
     for (i = 0, j = 0; i < num; i++, j = i * 2) {
         k = &params[j];
         v = &params[j + 1];
+        value_len = v->len;
+
+        use_base_path = path_translated && path_translated->len > 0
+            && fastcgi_path_translated.len == k->len
+            && ngx_strncasecmp(k->data, fastcgi_path_translated.data, k->len) == 0;
+
+        if (use_base_path) {
+          value_len += path_translated->len;
+        }
 
         if (k->len > 127) {
             *b->last++ = (u_char) (((k->len >> 24) & 0x7f) | 0x80);
@@ -3505,17 +3674,20 @@ ngx_http_upstream_check_create_fastcgi_request(ngx_pool_t *pool,
             *b->last++ = (u_char) k->len;
         }
 
-        if (v->len > 127) {
-            *b->last++ = (u_char) (((v->len >> 24) & 0x7f) | 0x80);
-            *b->last++ = (u_char) ((v->len >> 16) & 0xff);
-            *b->last++ = (u_char) ((v->len >> 8) & 0xff);
-            *b->last++ = (u_char) (v->len & 0xff);
+        if (value_len > 127) {
+            *b->last++ = (u_char) (((value_len >> 24) & 0x7f) | 0x80);
+            *b->last++ = (u_char) ((value_len >> 16) & 0xff);
+            *b->last++ = (u_char) ((value_len >> 8) & 0xff);
+            *b->last++ = (u_char) (value_len & 0xff);
 
         } else {
-            *b->last++ = (u_char) v->len;
+            *b->last++ = (u_char) value_len;
         }
 
         b->last = ngx_copy(b->last, k->data, k->len);
+        if (use_base_path) {
+          b->last = ngx_copy(b->last, path_translated->data, path_translated->len);
+        }
         b->last = ngx_copy(b->last, v->data, v->len);
     }
 
@@ -3552,8 +3724,8 @@ ngx_http_upstream_check_init_main_conf(ngx_conf_t *cf, void *conf)
     ngx_http_upstream_main_conf_t  *umcf;
 
     umcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_upstream_module);
-
     b = ngx_http_upstream_check_create_fastcgi_request(cf->pool,
+            NULL,
             fastcgi_default_params,
             sizeof(fastcgi_default_params) / sizeof(ngx_str_t) / 2);
 
@@ -3587,10 +3759,17 @@ ngx_http_upstream_check_create_srv_conf(ngx_conf_t *cf)
         return NULL;
     }
 
-    ucscf->fastcgi_params = ngx_array_create(cf->pool, 2 * 4, sizeof(ngx_str_t));
+    ucscf->fastcgi_params = ngx_pcalloc(cf->pool, sizeof(ngx_array_t *));
     if (ucscf->fastcgi_params == NULL) {
         return NULL;
     }
+    ucscf->fastcgi_params[0] = ngx_array_create(cf->pool, 2 * 4, sizeof(ngx_str_t));
+    if (ucscf->fastcgi_params[0] == NULL) {
+        return NULL;
+    }
+    ucscf->fastcgi_params_count = 1;
+    ucscf->fastcgi_path_translated.len = 0;
+    ucscf->fastcgi_path_translated.data = NULL;
 
     ucscf->port = NGX_CONF_UNSET_UINT;
     ucscf->fall_count = NGX_CONF_UNSET_UINT;
@@ -3627,6 +3806,7 @@ ngx_http_upstream_check_init_srv_conf(ngx_conf_t *cf, void *conf)
     ngx_check_conf_t                   *check;
     ngx_http_upstream_srv_conf_t       *us = conf;
     ngx_http_upstream_check_srv_conf_t *ucscf;
+    size_t                              i;
 
     if (us->srv_conf == NULL) {
         return NGX_CONF_OK;
@@ -3669,21 +3849,29 @@ ngx_http_upstream_check_init_srv_conf(ngx_conf_t *cf, void *conf)
             ngx_str_set(&s, "fastcgi");
 
             if (check == ngx_http_get_check_type_conf(&s)) {
+                ucscf->fastcgi_send = ngx_pcalloc(cf->pool, ucscf->fastcgi_params_count * sizeof(ngx_str_t));
+                if (ucscf->fastcgi_send == NULL) {
+                    return NGX_CONF_ERROR;
+                }
 
-                if (ucscf->fastcgi_params->nelts == 0) {
-                    ucscf->send.data = fastcgi_default_request.data;
-                    ucscf->send.len = fastcgi_default_request.len;
-
+                if (ucscf->fastcgi_params_count == 1 && ucscf->fastcgi_params[0]->nelts == 0) {
+                    ucscf->fastcgi_send[0].data = fastcgi_default_request.data;
+                    ucscf->fastcgi_send[0].len = fastcgi_default_request.len;
                 } else {
-                    b = ngx_http_upstream_check_create_fastcgi_request(
-                            cf->pool, ucscf->fastcgi_params->elts,
-                            ucscf->fastcgi_params->nelts / 2);
-                    if (b == NULL) {
-                        return NGX_CONF_ERROR;
+                    for (i = 0; i < ucscf->fastcgi_params_count; ++i) {
+                        if (ucscf->fastcgi_params[i]->nelts > 0) {
+                            b = ngx_http_upstream_check_create_fastcgi_request(
+                                cf->pool,
+                                &(ucscf->fastcgi_path_translated),
+                                ucscf->fastcgi_params[i]->elts,
+                                ucscf->fastcgi_params[i]->nelts / 2);
+                            if (b == NULL) {
+                                return NGX_CONF_ERROR;
+                            }
+                            ucscf->fastcgi_send[i].data = b->pos;
+                            ucscf->fastcgi_send[i].len = b->last - b->pos;
+                        }
                     }
-
-                    ucscf->send.data = b->pos;
-                    ucscf->send.len = b->last - b->pos;
                 }
             } else {
                 ucscf->send.data = check->default_send.data;
@@ -3992,8 +4180,9 @@ ngx_http_upstream_check_find_shm_peer(ngx_http_upstream_check_peers_shm_t *p,
         }
 
         if ((ngx_memcmp(addr->sockaddr, peer_shm->sockaddr, addr->socklen) == 0)
-            && (ngx_strncmp(upstream_name->data, peer_shm->upstream_name->data,
-                            upstream_name->len) == 0)) {
+            && upstream_name->len == peer_shm->upstream_name->len
+            && (ngx_strncmp(upstream_name->data, peer_shm->upstream_name->data, upstream_name->len) == 0)
+        ) {
             return peer_shm;
         }
     }

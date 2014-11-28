@@ -124,7 +124,7 @@ Directives
     connection, the default vaule 1 indicates that nginx will certainly
     close the connection after a request.
 
-  check_fastcgi_param
+  check_fastcgi_param, check_fastcgi_param1, check_fastcgi_param2, check_fastcgi_param3, check_fastcgi_param4
     Syntax: *check_fastcgi_params parameter value*
 
     default: see below
