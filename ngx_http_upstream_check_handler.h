@@ -63,6 +63,7 @@ typedef struct {
     ngx_pid_t    owner;
 
     ngx_msec_t   access_time;
+    ngx_msec_t   last_event_time;
 
     ngx_uint_t   fall_count;
     ngx_uint_t   rise_count;
