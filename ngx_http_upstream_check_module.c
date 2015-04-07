@@ -239,6 +239,8 @@ struct ngx_http_upstream_check_srv_conf_s {
     ngx_array_t                             *fastcgi_params;
 
     ngx_uint_t                               default_down;
+
+    ngx_uint_t                               fast_upstream_init;
 };
 
 
@@ -2509,13 +2511,21 @@ ngx_http_upstream_check_status_update(ngx_http_upstream_check_peer_t *peer,
     ucscf = peer->conf;
 
     if (result) {
-        peer->shm->rise_count++;
-        peer->shm->fall_count = 0;
-        if (peer->shm->down && peer->shm->rise_count >= ucscf->rise_count) {
+        if (ucscf->fast_upstream_init && peer->shm->fall_count == 0 && peer->shm->rise_count == 0 ) {
+            peer->shm->rise_count = ucscf->rise_count;
             peer->shm->down = 0;
             ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
-                          "enable check peer: %V ",
+                          "enable_fast check peer: %V ",
                           &peer->check_peer_addr->name);
+        } else {
+            peer->shm->rise_count++;
+            peer->shm->fall_count = 0;
+            if (peer->shm->down && peer->shm->rise_count >= ucscf->rise_count) {
+                peer->shm->down = 0;
+                ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                              "enable check peer: %V ",
+                              &peer->check_peer_addr->name);
+            }
         }
     } else {
         peer->shm->rise_count = 0;
@@ -3067,7 +3077,7 @@ static char *
 ngx_http_upstream_check(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
     ngx_str_t                           *value, s;
-    ngx_uint_t                           i, port, rise, fall, default_down;
+    ngx_uint_t                           i, port, rise, fall, default_down, fast_upstream_init;
     ngx_msec_t                           interval, timeout;
     ngx_http_upstream_check_srv_conf_t  *ucscf;
 
@@ -3078,6 +3088,8 @@ ngx_http_upstream_check(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     interval = 30000;
     timeout = 1000;
     default_down = 1;
+
+    fast_upstream_init = 0;
 
     value = cf->args->elts;
 
@@ -3181,6 +3193,25 @@ ngx_http_upstream_check(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             continue;
         }
 
+        if (ngx_strncmp(value[i].data, "fast_upstream_init=", 19) == 0) {
+            s.len = value[i].len - 19;
+            s.data = value[i].data + 19;
+
+            if (ngx_strcasecmp(s.data, (u_char *) "true") == 0) {
+                fast_upstream_init = 1;
+            } else if (ngx_strcasecmp(s.data, (u_char *) "false") == 0) {
+                fast_upstream_init = 0;
+            } else {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "invalid value \"%s\", "
+                                   "it must be \"true\" or \"false\"",
+                                   value[i].data);
+                return NGX_CONF_ERROR;
+            }
+
+            continue;
+        }
+
         goto invalid_check_parameter;
     }
 
@@ -3190,6 +3221,8 @@ ngx_http_upstream_check(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ucscf->fall_count = fall;
     ucscf->rise_count = rise;
     ucscf->default_down = default_down;
+
+    ucscf->fast_upstream_init = fast_upstream_init;
 
     if (ucscf->check_type_conf == NGX_CONF_UNSET_PTR) {
         ngx_str_set(&s, "tcp");
