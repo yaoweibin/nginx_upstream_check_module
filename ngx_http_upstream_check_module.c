@@ -90,6 +90,8 @@ typedef struct {
 
     ngx_atomic_t                             down;
 
+    ngx_msec_t                               sync_wakeup_timeout;
+
     u_char                                   padding[64];
 } ngx_http_upstream_check_peer_shm_t;
 
@@ -239,6 +241,9 @@ struct ngx_http_upstream_check_srv_conf_s {
     ngx_array_t                             *fastcgi_params;
 
     ngx_uint_t                               default_down;
+
+    ngx_uint_t                               sync_wakeup;
+    ngx_msec_t                               sync_wakeup_timeout;
 };
 
 
@@ -2512,10 +2517,82 @@ ngx_http_upstream_check_status_update(ngx_http_upstream_check_peer_t *peer,
         peer->shm->rise_count++;
         peer->shm->fall_count = 0;
         if (peer->shm->down && peer->shm->rise_count >= ucscf->rise_count) {
-            peer->shm->down = 0;
-            ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+            if (ucscf->sync_wakeup) {
+
+                ngx_http_upstream_check_peers_t *peers;
+                ngx_http_upstream_check_peer_t  *peer_pool;
+                ngx_uint_t                       i;
+                peers = check_peers_ctx;
+                peer_pool = peers->peers.elts;
+
+                if (peer->shm->sync_wakeup_timeout > 0) {
+                    if ( peer->shm->sync_wakeup_timeout < ngx_current_msec ) {
+                        peer->shm->sync_wakeup_timeout = 0;
+                        peer->shm->down = 0;
+                        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                            "enable_sync_wakeup current peer up timeout check peer: %V ",
+                            &peer->check_peer_addr->name);
+                        for (i = 0; i < peers->peers.nelts; i++) {
+                            if (peer_pool[i].shm->down) {
+                                if (peer_pool[i].shm->sync_wakeup_timeout > 0 && peer_pool[i].shm->sync_wakeup_timeout < ngx_current_msec) {
+                                    peer_pool[i].shm->sync_wakeup_timeout = 0;
+                                    peer_pool[i].shm->down = 0;
+                                    ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                                        "enable_sync_wakeup other peer up timeout check peer: %V ",
+                                        &peer_pool[i].check_peer_addr->name);
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    ngx_uint_t                       total_peers=0;
+                    ngx_uint_t                       up_peers=0;
+                    ngx_uint_t                       sync_wakeup_peers=0;
+
+                    for (i = 0; i < peers->peers.nelts; i++) {
+                        total_peers++;
+                        if (!peer_pool[i].shm->down) {
+                            up_peers++;
+                        } else {
+                            if (peer_pool[i].shm->sync_wakeup_timeout > 0) {
+                                sync_wakeup_peers++;
+                            }
+                        }
+                    }
+
+                    if (total_peers > 1 && ( up_peers + sync_wakeup_peers + 1 ) < total_peers) {
+                        peer->shm->sync_wakeup_timeout = ngx_current_msec + ucscf->sync_wakeup_timeout;
+                        for (i = 0; i < peers->peers.nelts; i++) {
+                            if (peer_pool[i].shm->down) {
+                                if (peer_pool[i].shm->sync_wakeup_timeout > 0 && peer_pool[i].shm->sync_wakeup_timeout < peer->shm->sync_wakeup_timeout) {
+                                    peer_pool[i].shm->sync_wakeup_timeout = peer->shm->sync_wakeup_timeout;
+                                }
+                            }
+                        }
+                    } else {
+                        peer->shm->down = 0;
+                        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                            "enable_sync_wakeup current peer up last check peer: %V ",
+                            &peer->check_peer_addr->name);
+                        if (sync_wakeup_peers > 0) {
+                            for (i = 0; i < peers->peers.nelts; i++) {
+                                if (peer_pool[i].shm->down) {
+                                    peer_pool[i].shm->sync_wakeup_timeout = 0;
+                                    peer_pool[i].shm->down = 0;
+                                    ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                                        "enable_sync_wakeup other peer up last check peer: %V ",
+                                        &peer_pool[i].check_peer_addr->name);
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                peer->shm->down = 0;
+                ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
                           "enable check peer: %V ",
                           &peer->check_peer_addr->name);
+            }
         }
     } else {
         peer->shm->rise_count = 0;
@@ -2871,6 +2948,7 @@ ngx_http_upstream_check_status_html_format(ngx_buf_t *b,
             "    <th>Fall counts</th>\n"
             "    <th>Check type</th>\n"
             "    <th>Check port</th>\n"
+            "    <th>Sync start timeout</th>\n"
             "  </tr>\n",
             count, ngx_http_upstream_check_shm_generation);
 
@@ -2899,6 +2977,7 @@ ngx_http_upstream_check_status_html_format(ngx_buf_t *b,
                 "    <td>%ui</td>\n"
                 "    <td>%V</td>\n"
                 "    <td>%ui</td>\n"
+                "    <td>%ui</td>\n"
                 "  </tr>\n",
                 peer[i].shm->down ? " bgcolor=\"#FF0000\"" : "",
                 i,
@@ -2908,7 +2987,8 @@ ngx_http_upstream_check_status_html_format(ngx_buf_t *b,
                 peer[i].shm->rise_count,
                 peer[i].shm->fall_count,
                 &peer[i].conf->check_type_conf->name,
-                peer[i].conf->port);
+                peer[i].conf->port,
+                peer[i].conf->sync_wakeup ? ( peer[i].shm->sync_wakeup_timeout > 0 ? peer[i].shm->sync_wakeup_timeout - ngx_current_msec : 0 ) : 0 );
     }
 
     b->last = ngx_snprintf(b->last, b->end - b->last,
@@ -2942,7 +3022,7 @@ ngx_http_upstream_check_status_csv_format(ngx_buf_t *b,
         }
 
         b->last = ngx_snprintf(b->last, b->end - b->last,
-                "%ui,%V,%V,%s,%ui,%ui,%V,%ui\n",
+                "%ui,%V,%V,%s,%ui,%ui,%V,%ui,%ui\n",
                 i,
                 peer[i].upstream_name,
                 &peer[i].peer_addr->name,
@@ -2950,7 +3030,8 @@ ngx_http_upstream_check_status_csv_format(ngx_buf_t *b,
                 peer[i].shm->rise_count,
                 peer[i].shm->fall_count,
                 &peer[i].conf->check_type_conf->name,
-                peer[i].conf->port);
+                peer[i].conf->port,
+                peer[i].shm->sync_wakeup_timeout - ngx_current_msec);
     }
 }
 
@@ -3016,7 +3097,8 @@ ngx_http_upstream_check_status_json_format(ngx_buf_t *b,
                 "\"rise\": %ui, "
                 "\"fall\": %ui, "
                 "\"type\": \"%V\", "
-                "\"port\": %ui}"
+                "\"port\": %ui, "
+                "\"sync_timeout\": %ui}"
                 "%s\n",
                 i,
                 peer[i].upstream_name,
@@ -3026,6 +3108,7 @@ ngx_http_upstream_check_status_json_format(ngx_buf_t *b,
                 peer[i].shm->fall_count,
                 &peer[i].conf->check_type_conf->name,
                 peer[i].conf->port,
+                peer[i].shm->sync_wakeup_timeout - ngx_current_msec,
                 (i == last) ? "" : ",");
     }
 
@@ -3068,7 +3151,8 @@ ngx_http_upstream_check(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
     ngx_str_t                           *value, s;
     ngx_uint_t                           i, port, rise, fall, default_down;
-    ngx_msec_t                           interval, timeout;
+    ngx_uint_t                           sync_wakeup;
+    ngx_msec_t                           interval, timeout, sync_wakeup_timeout;
     ngx_http_upstream_check_srv_conf_t  *ucscf;
 
     /* default values */
@@ -3078,6 +3162,9 @@ ngx_http_upstream_check(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     interval = 30000;
     timeout = 1000;
     default_down = 1;
+
+    sync_wakeup = 0;
+    sync_wakeup_timeout = 5000;
 
     value = cf->args->elts;
 
@@ -3181,6 +3268,37 @@ ngx_http_upstream_check(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             continue;
         }
 
+        if (ngx_strncmp(value[i].data, "sync_wakeup=", 12) == 0) {
+            s.len = value[i].len - 12;
+            s.data = value[i].data + 12;
+
+            if (ngx_strcasecmp(s.data, (u_char *) "true") == 0) {
+                sync_wakeup = 1;
+            } else if (ngx_strcasecmp(s.data, (u_char *) "false") == 0) {
+                sync_wakeup = 0;
+            } else {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "invalid value \"%s\", "
+                                   "it must be \"true\" or \"false\"",
+                                   value[i].data);
+                return NGX_CONF_ERROR;
+            }
+
+            continue;
+        }
+
+        if (ngx_strncmp(value[i].data, "sync_wakeup_timeout=", 20) == 0) {
+            s.len = value[i].len - 20;
+            s.data = value[i].data + 20;
+
+            sync_wakeup_timeout = ngx_atoi(s.data, s.len);
+            if (sync_wakeup_timeout == (ngx_msec_t) NGX_ERROR || timeout == 0) {
+                goto invalid_check_parameter;
+            }
+
+            continue;
+        }
+
         goto invalid_check_parameter;
     }
 
@@ -3190,6 +3308,9 @@ ngx_http_upstream_check(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ucscf->fall_count = fall;
     ucscf->rise_count = rise;
     ucscf->default_down = default_down;
+
+    ucscf->sync_wakeup = sync_wakeup;
+    ucscf->sync_wakeup_timeout = sync_wakeup_timeout;
 
     if (ucscf->check_type_conf == NGX_CONF_UNSET_PTR) {
         ngx_str_set(&s, "tcp");
@@ -3596,6 +3717,7 @@ ngx_http_upstream_check_create_srv_conf(ngx_conf_t *cf)
     ucscf->check_timeout = NGX_CONF_UNSET_MSEC;
     ucscf->check_keepalive_requests = NGX_CONF_UNSET_UINT;
     ucscf->check_type_conf = NGX_CONF_UNSET_PTR;
+    ucscf->sync_wakeup_timeout = NGX_CONF_UNSET_MSEC;
 
     return ucscf;
 }
@@ -3658,6 +3780,10 @@ ngx_http_upstream_check_init_srv_conf(ngx_conf_t *cf, void *conf)
 
     if (ucscf->check_type_conf == NGX_CONF_UNSET_PTR) {
         ucscf->check_type_conf = NULL;
+    }
+
+    if (ucscf->sync_wakeup_timeout == NGX_CONF_UNSET_MSEC) {
+        ucscf->sync_wakeup_timeout = 5000;
     }
 
     check = ucscf->check_type_conf;
@@ -4013,6 +4139,8 @@ ngx_http_upstream_check_init_shm_peer(ngx_http_upstream_check_peer_shm_t *psh,
 
         psh->down         = opsh->down;
 
+        psh->sync_wakeup_timeout  = opsh->sync_wakeup_timeout;
+
     } else {
         psh->access_time  = 0;
         psh->access_count = 0;
@@ -4022,6 +4150,8 @@ ngx_http_upstream_check_init_shm_peer(ngx_http_upstream_check_peer_shm_t *psh,
         psh->busyness     = 0;
 
         psh->down         = init_down;
+
+        psh->sync_wakeup_timeout  = 0;
     }
 
 #if (NGX_HAVE_ATOMIC_OPS)
