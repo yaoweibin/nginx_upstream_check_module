@@ -1016,6 +1016,7 @@ ngx_http_upstream_check_add_timers(ngx_cycle_t *cycle)
 static void
 ngx_http_upstream_check_begin_handler(ngx_event_t *event)
 {
+    ngx_pid_t                            prev_owner;
     ngx_msec_t                           interval;
     ngx_http_upstream_check_peer_t      *peer;
     ngx_http_upstream_check_peers_t     *peers;
@@ -1063,6 +1064,7 @@ ngx_http_upstream_check_begin_handler(ngx_event_t *event)
         return;
     }
 
+    prev_owner = peer->shm->owner;
     if ((interval >= ucscf->check_interval)
          && (peer->shm->owner == NGX_INVALID_PID))
     {
@@ -1084,6 +1086,14 @@ ngx_http_upstream_check_begin_handler(ngx_event_t *event)
     ngx_shmtx_unlock(&peer->shm->mutex);
 
     if (peer->shm->owner == ngx_pid) {
+        if (prev_owner != ngx_pid) {
+
+            ngx_log_error(NGX_LOG_INFO, event->log, 0,
+                          "check has changed owner. "
+                          "prev_owner: %P, interval: %M",
+                          prev_owner, interval);
+
+        }
         ngx_http_upstream_check_connect_handler(event);
     }
 }
@@ -1129,6 +1139,11 @@ ngx_http_upstream_check_connect_handler(ngx_event_t *event)
     rc = ngx_event_connect_peer(&peer->pc);
 
     if (rc == NGX_ERROR || rc == NGX_DECLINED) {
+
+        ngx_log_error(NGX_LOG_ERR, event->log, 0,
+                      "check connect failed with peer: %V, rc: %i",
+                      &peer->check_peer_addr->name, rc);
+
         ngx_http_upstream_check_status_update(peer, 0);
         return;
     }
@@ -1304,6 +1319,11 @@ ngx_http_upstream_check_send_handler(ngx_event_t *event)
         peer->check_data = ngx_pcalloc(peer->pool,
                                        sizeof(ngx_http_upstream_check_ctx_t));
         if (peer->check_data == NULL) {
+
+            ngx_log_error(NGX_LOG_ERR, event->log, 0,
+                          "check init ngx_pcalloc error with peer: %V ",
+                          &peer->check_peer_addr->name);
+
             goto check_send_fail;
         }
 
@@ -1327,7 +1347,7 @@ ngx_http_upstream_check_send_handler(ngx_event_t *event)
         {
         ngx_err_t  err;
 
-        err = (size >=0) ? 0 : ngx_socket_errno;
+        err = (size >= 0) ? 0 : ngx_socket_errno;
         ngx_log_error(NGX_LOG_DEBUG, ngx_cycle->log, err,
                        "http check send size: %z, total: %z",
                        size, ctx->send.last - ctx->send.pos);
@@ -1340,6 +1360,11 @@ ngx_http_upstream_check_send_handler(ngx_event_t *event)
             return;
         } else {
             c->error = 1;
+
+            ngx_log_error(NGX_LOG_ERR, event->log, ngx_socket_errno,
+                          "check send failed with peer: %V, size: %z",
+                          &peer->check_peer_addr->name, size);
+
             goto check_send_fail;
         }
     }
@@ -1378,6 +1403,11 @@ ngx_http_upstream_check_recv_handler(ngx_event_t *event)
     if (peer->state != NGX_HTTP_CHECK_SEND_DONE) {
 
         if (ngx_handle_read_event(c->read, 0) != NGX_OK) {
+
+            ngx_log_error(NGX_LOG_ERR, event->log, 0,
+                          "check ngx_handle_read_event failed for peer: %V ",
+                          &peer->check_peer_addr->name);
+
             goto check_recv_fail;
         }
 
@@ -1390,6 +1420,10 @@ ngx_http_upstream_check_recv_handler(ngx_event_t *event)
         /* 1/2 of the page_size, is it enough? */
         ctx->recv.start = ngx_palloc(c->pool, ngx_pagesize / 2);
         if (ctx->recv.start == NULL) {
+
+            ngx_log_error(NGX_LOG_ERR, event->log, 0,
+                          "check ngx_palloc failed for size: %z", ngx_pagesize / 2);
+
             goto check_recv_fail;
         }
 
@@ -1405,6 +1439,10 @@ ngx_http_upstream_check_recv_handler(ngx_event_t *event)
             size = ctx->recv.end - ctx->recv.start;
             new_buf = ngx_palloc(c->pool, size * 2);
             if (new_buf == NULL) {
+
+                ngx_log_error(NGX_LOG_ERR, event->log, 0,
+                              "check ngx_palloc failed for size: %z", size);
+
                 goto check_recv_fail;
             }
 
@@ -1437,6 +1475,11 @@ ngx_http_upstream_check_recv_handler(ngx_event_t *event)
             break;
         } else {
             c->error = 1;
+
+            ngx_log_error(NGX_LOG_ERR, event->log, ngx_socket_errno,
+                          "check recv failed with peer: %V, size: %z",
+                          &peer->check_peer_addr->name, size);
+
             goto check_recv_fail;
         }
     }
@@ -1452,6 +1495,12 @@ ngx_http_upstream_check_recv_handler(ngx_event_t *event)
     case NGX_AGAIN:
         /* The peer has closed its half side of the connection. */
         if (size == 0) {
+
+            ngx_log_error(NGX_LOG_ERR, event->log, 0,
+                          "check connection %V error with peer: %V ",
+                          &peer->conf->check_type_conf->name,
+                          &peer->check_peer_addr->name);
+
             ngx_http_upstream_check_status_update(peer, 0);
             c->error = 1;
             break;
@@ -2514,8 +2563,9 @@ ngx_http_upstream_check_status_update(ngx_http_upstream_check_peer_t *peer,
         if (peer->shm->down && peer->shm->rise_count >= ucscf->rise_count) {
             peer->shm->down = 0;
             ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
-                          "enable check peer: %V ",
-                          &peer->check_peer_addr->name);
+                          "enable check peer: %V, raise: %ui/%ui",
+                          &peer->check_peer_addr->name,
+                          peer->shm->rise_count, ucscf->rise_count);
         }
     } else {
         peer->shm->rise_count = 0;
@@ -2523,8 +2573,9 @@ ngx_http_upstream_check_status_update(ngx_http_upstream_check_peer_t *peer,
         if (!peer->shm->down && peer->shm->fall_count >= ucscf->fall_count) {
             peer->shm->down = 1;
             ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
-                          "disable check peer: %V ",
-                          &peer->check_peer_addr->name);
+                          "disable check peer: %V, fall: %ui/%ui",
+                          &peer->check_peer_addr->name,
+                          peer->shm->fall_count, ucscf->fall_count);
         }
     }
 
@@ -2586,8 +2637,8 @@ ngx_http_upstream_check_timeout_handler(ngx_event_t *event)
     peer->pc.connection->error = 1;
 
     ngx_log_error(NGX_LOG_ERR, event->log, 0,
-                  "check time out with peer: %V ",
-                  &peer->check_peer_addr->name);
+                  "check time out with peer: %V, state: %p",
+                  &peer->check_peer_addr->name, peer->state);
 
     ngx_http_upstream_check_status_update(peer, 0);
     ngx_http_upstream_check_clean_event(peer);
