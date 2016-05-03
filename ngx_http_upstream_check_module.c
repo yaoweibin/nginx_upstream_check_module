@@ -128,6 +128,7 @@ struct ngx_http_upstream_check_peer_s {
     ngx_event_t                              check_ev;
     ngx_event_t                              check_timeout_ev;
     ngx_peer_connection_t                    pc;
+    ngx_ssl_t                                ssl;
 
     void                                    *check_data;
     ngx_event_handler_pt                     send_handler;
@@ -241,6 +242,7 @@ struct ngx_http_upstream_check_srv_conf_s {
     ngx_array_t                             *fastcgi_params;
 
     ngx_uint_t                               default_down;
+    ngx_uint_t                               ssl;
 };
 
 
@@ -341,6 +343,15 @@ static ngx_int_t ngx_http_upstream_check_peek_one_byte(ngx_connection_t *c);
 
 static void ngx_http_upstream_check_begin_handler(ngx_event_t *event);
 static void ngx_http_upstream_check_connect_handler(ngx_event_t *event);
+static void ngx_http_upstream_check_connect_done(
+    ngx_http_upstream_check_peer_t *peer,
+    ngx_http_upstream_check_srv_conf_t *ucscf, ngx_connection_t *c,
+    ngx_int_t ok);
+
+static void ngx_http_upstream_check_ssl_init(
+    ngx_http_upstream_check_peer_t *peer,
+    ngx_http_upstream_check_srv_conf_t *ucscf, ngx_connection_t *c);
+static void ngx_http_upstream_check_ssl_handshake(ngx_connection_t *c);
 
 static void ngx_http_upstream_check_peek_handler(ngx_event_t *event);
 
@@ -1118,7 +1129,8 @@ ngx_http_upstream_check_connect_handler(ngx_event_t *event)
     if (peer->pc.connection != NULL) {
         c = peer->pc.connection;
         if ((rc = ngx_http_upstream_check_peek_one_byte(c)) == NGX_OK) {
-            goto upstream_check_connect_done;
+            ngx_http_upstream_check_connect_done(peer, ucscf, c, 1);
+            return;
         } else {
             ngx_close_connection(c);
             peer->pc.connection = NULL;
@@ -1153,7 +1165,19 @@ ngx_http_upstream_check_connect_handler(ngx_event_t *event)
     c->write->log = c->log;
     c->pool = peer->pool;
 
-upstream_check_connect_done:
+    if (ucscf->ssl) {
+        ngx_http_upstream_check_ssl_init(peer, ucscf, c);
+        return;
+    }
+
+    ngx_http_upstream_check_connect_done(peer, ucscf, c, rc == NGX_OK);
+}
+
+static void
+ngx_http_upstream_check_connect_done(ngx_http_upstream_check_peer_t *peer,
+    ngx_http_upstream_check_srv_conf_t *ucscf, ngx_connection_t *c,
+    ngx_int_t ok)
+{
     peer->state = NGX_HTTP_CHECK_CONNECT_DONE;
 
     c->write->handler = peer->send_handler;
@@ -1162,9 +1186,65 @@ upstream_check_connect_done:
     ngx_add_timer(&peer->check_timeout_ev, ucscf->check_timeout);
 
     /* The kqueue's loop interface needs it. */
-    if (rc == NGX_OK) {
+    if (ok) {
         c->write->handler(c->write);
     }
+}
+
+static void
+ngx_http_upstream_check_ssl_init(ngx_http_upstream_check_peer_t *peer,
+    ngx_http_upstream_check_srv_conf_t *ucscf, ngx_connection_t *c)
+{
+    ngx_int_t  rc;
+    ngx_uint_t protocols, flags;
+
+    ngx_memzero(&peer->ssl, sizeof(ngx_ssl_t));
+
+    protocols = NGX_SSL_TLSv1|NGX_SSL_SSLv2|NGX_SSL_SSLv3;
+    flags = NGX_SSL_BUFFER|NGX_SSL_CLIENT;
+    if (ngx_ssl_create(&peer->ssl, protocols, NULL) != NGX_OK ||
+        ngx_ssl_create_connection(&peer->ssl, c, flags) != NGX_OK) {
+        goto failed;
+    }
+
+    rc = ngx_ssl_handshake(c);
+    if (rc == NGX_ERROR) {
+        goto failed;
+    }
+
+    if (rc == NGX_AGAIN) {
+        ngx_add_timer(c->read, ucscf->check_timeout);
+        c->ssl->handler = ngx_http_upstream_check_ssl_handshake;
+        return;
+    }
+
+    ngx_http_upstream_check_ssl_handshake(c);
+    return;
+
+failed:
+    ngx_http_upstream_check_status_update(peer, 0);
+    ngx_http_upstream_check_clean_event(peer);
+}
+
+static void
+ngx_http_upstream_check_ssl_handshake(ngx_connection_t *c)
+{
+    ngx_http_upstream_check_peer_t      *peer;
+    ngx_http_upstream_check_srv_conf_t  *ucscf;
+
+    peer = (ngx_http_upstream_check_peer_t *) c->data;
+    ucscf = peer->conf;
+
+    if (c->read->timer_set)
+        ngx_del_timer(c->read);
+
+    if (!c->ssl->handshaked) {
+        ngx_http_upstream_check_status_update(peer, 0);
+        ngx_http_upstream_check_clean_event(peer);
+        return;
+    }
+
+    ngx_http_upstream_check_connect_done(peer, ucscf, c, 1);
 }
 
 static ngx_int_t
@@ -3079,7 +3159,7 @@ static char *
 ngx_http_upstream_check(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
     ngx_str_t                           *value, s;
-    ngx_uint_t                           i, port, rise, fall, default_down;
+    ngx_uint_t                           i, port, rise, fall, default_down, ssl;
     ngx_msec_t                           interval, timeout;
     ngx_http_upstream_check_srv_conf_t  *ucscf;
 
@@ -3090,6 +3170,7 @@ ngx_http_upstream_check(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     interval = 30000;
     timeout = 1000;
     default_down = 1;
+    ssl = 0;
 
     value = cf->args->elts;
 
@@ -3193,6 +3274,25 @@ ngx_http_upstream_check(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             continue;
         }
 
+        if (ngx_strncmp(value[i].data, "ssl=", 4) == 0) {
+            s.len = value[i].len - 4;
+            s.data = value[i].data + 4;
+
+            if (ngx_strcasecmp(s.data, (u_char *) "true") == 0) {
+                ssl = 1;
+            } else if (ngx_strcasecmp(s.data, (u_char *) "false") == 0) {
+                ssl = 0;
+            } else {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "invalid value \"%s\", "
+                                   "it must be \"true\" or \"false\"",
+                                   value[i].data);
+                return NGX_CONF_ERROR;
+            }
+
+            continue;
+        }
+
         goto invalid_check_parameter;
     }
 
@@ -3202,6 +3302,7 @@ ngx_http_upstream_check(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ucscf->fall_count = fall;
     ucscf->rise_count = rise;
     ucscf->default_down = default_down;
+    ucscf->ssl = ssl;
 
     if (ucscf->check_type_conf == NGX_CONF_UNSET_PTR) {
         ngx_str_set(&s, "tcp");
