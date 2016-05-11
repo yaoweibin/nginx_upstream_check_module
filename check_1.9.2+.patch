@@ -1,7 +1,7 @@
-diff --git src/http/modules/ngx_http_upstream_hash_module.c src/http/modules/ngx_http_upstream_hash_module.c
+diff --git a/src/http/modules/ngx_http_upstream_hash_module.c b/src/http/modules/ngx_http_upstream_hash_module.c
 index 1e2e05c..44a72e2 100644
---- src/http/modules/ngx_http_upstream_hash_module.c
-+++ src/http/modules/ngx_http_upstream_hash_module.c
+--- a/src/http/modules/ngx_http_upstream_hash_module.c
++++ b/src/http/modules/ngx_http_upstream_hash_module.c
 @@ -9,6 +9,9 @@
  #include <ngx_core.h>
  #include <ngx_http.h>
@@ -44,10 +44,10 @@ index 1e2e05c..44a72e2 100644
              if (peer->server.len != server->len
                  || ngx_strncmp(peer->server.data, server->data, server->len)
                     != 0)
-diff --git src/http/modules/ngx_http_upstream_ip_hash_module.c src/http/modules/ngx_http_upstream_ip_hash_module.c
+diff --git a/src/http/modules/ngx_http_upstream_ip_hash_module.c b/src/http/modules/ngx_http_upstream_ip_hash_module.c
 index 401b58e..ba656bd 100644
---- src/http/modules/ngx_http_upstream_ip_hash_module.c
-+++ src/http/modules/ngx_http_upstream_ip_hash_module.c
+--- a/src/http/modules/ngx_http_upstream_ip_hash_module.c
++++ b/src/http/modules/ngx_http_upstream_ip_hash_module.c
 @@ -9,6 +9,9 @@
  #include <ngx_core.h>
  #include <ngx_http.h>
@@ -74,10 +74,10 @@ index 401b58e..ba656bd 100644
          if (peer->max_fails
              && peer->fails >= peer->max_fails
              && now - peer->checked <= peer->fail_timeout)
-diff --git src/http/modules/ngx_http_upstream_least_conn_module.c src/http/modules/ngx_http_upstream_least_conn_module.c
+diff --git a/src/http/modules/ngx_http_upstream_least_conn_module.c b/src/http/modules/ngx_http_upstream_least_conn_module.c
 index 92951bd..48aca2c 100644
---- src/http/modules/ngx_http_upstream_least_conn_module.c
-+++ src/http/modules/ngx_http_upstream_least_conn_module.c
+--- a/src/http/modules/ngx_http_upstream_least_conn_module.c
++++ b/src/http/modules/ngx_http_upstream_least_conn_module.c
 @@ -9,6 +9,9 @@
  #include <ngx_core.h>
  #include <ngx_http.h>
@@ -122,10 +122,10 @@ index 92951bd..48aca2c 100644
              if (peer->conns * best->weight != best->conns * peer->weight) {
                  continue;
              }
-diff --git src/http/ngx_http_upstream_round_robin.c src/http/ngx_http_upstream_round_robin.c
+diff --git a/src/http/ngx_http_upstream_round_robin.c b/src/http/ngx_http_upstream_round_robin.c
 index d6ae33b..416572a 100644
---- src/http/ngx_http_upstream_round_robin.c
-+++ src/http/ngx_http_upstream_round_robin.c
+--- a/src/http/ngx_http_upstream_round_robin.c
++++ b/src/http/ngx_http_upstream_round_robin.c
 @@ -9,6 +9,9 @@
  #include <ngx_core.h>
  #include <ngx_http.h>
@@ -225,10 +225,10 @@ index d6ae33b..416572a 100644
          if (peer->max_fails
              && peer->fails >= peer->max_fails
              && now - peer->checked <= peer->fail_timeout)
-diff --git src/http/ngx_http_upstream_round_robin.h src/http/ngx_http_upstream_round_robin.h
+diff --git a/src/http/ngx_http_upstream_round_robin.h b/src/http/ngx_http_upstream_round_robin.h
 index f2c573f..75e0ed6 100644
---- src/http/ngx_http_upstream_round_robin.h
-+++ src/http/ngx_http_upstream_round_robin.h
+--- a/src/http/ngx_http_upstream_round_robin.h
++++ b/src/http/ngx_http_upstream_round_robin.h
 @@ -35,6 +35,10 @@ struct ngx_http_upstream_rr_peer_s {
      ngx_uint_t                      max_fails;
      time_t                          fail_timeout;
