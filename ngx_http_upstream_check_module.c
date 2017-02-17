@@ -2646,6 +2646,13 @@ ngx_http_upstream_check_clean_event(ngx_http_upstream_check_peer_t *peer)
             c->write->handler = ngx_http_upstream_check_dummy_handler;
             c->read->handler = ngx_http_upstream_check_discard_handler;
         } else {
+            if (c->ssl) {
+                c->ssl->no_wait_shutdown = 1;
+                c->ssl->no_send_shutdown = 1;
+                ngx_ssl_shutdown(c);
+
+                ngx_ssl_cleanup_ctx(&peer->ssl);
+            }
             ngx_close_connection(c);
             peer->pc.connection = NULL;
         }
