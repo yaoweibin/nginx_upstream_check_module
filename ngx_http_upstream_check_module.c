@@ -77,6 +77,8 @@ typedef struct {
 
     ngx_pid_t                                owner;
 
+    ngx_str_t                               *upstream_name;
+
     ngx_msec_t                               access_time;
 
     ngx_uint_t                               fall_count;
@@ -90,7 +92,7 @@ typedef struct {
 
     ngx_atomic_t                             down;
 
-    u_char                                   padding[64];
+    u_char                                   padding[56];
 } ngx_http_upstream_check_peer_shm_t;
 
 
@@ -222,6 +224,7 @@ typedef struct {
 
 
 struct ngx_http_upstream_check_srv_conf_s {
+    ngx_http_upstream_srv_conf_t            *upstream_srv_conf;
     ngx_uint_t                               port;
     ngx_uint_t                               fall_count;
     ngx_uint_t                               rise_count;
@@ -482,7 +485,8 @@ static ngx_int_t ngx_http_upstream_check_get_shm_name(ngx_str_t *shm_name,
 static ngx_shm_zone_t *ngx_shared_memory_find(ngx_cycle_t *cycle,
     ngx_str_t *name, void *tag);
 static ngx_http_upstream_check_peer_shm_t *
-ngx_http_upstream_check_find_shm_peer(ngx_http_upstream_check_peers_shm_t *peers_shm,
+ngx_http_upstream_check_find_shm_peer(
+    ngx_http_upstream_check_peers_shm_t *peers_shm, ngx_str_t *us_name,
     ngx_addr_t *addr);
 
 static ngx_int_t ngx_http_upstream_check_init_shm_peer(
@@ -3728,6 +3732,7 @@ ngx_http_upstream_check_create_srv_conf(ngx_conf_t *cf)
         return NULL;
     }
 
+    ucscf->upstream_srv_conf = NGX_CONF_UNSET_PTR;
     ucscf->port = NGX_CONF_UNSET_UINT;
     ucscf->fall_count = NGX_CONF_UNSET_UINT;
     ucscf->rise_count = NGX_CONF_UNSET_UINT;
@@ -3769,6 +3774,10 @@ ngx_http_upstream_check_init_srv_conf(ngx_conf_t *cf, void *conf)
     }
 
     ucscf = ngx_http_conf_upstream_srv_conf(us, ngx_http_upstream_check_module);
+
+    if (ucscf->upstream_srv_conf == NGX_CONF_UNSET_PTR) {
+        ucscf->upstream_srv_conf = us;
+    }
 
     if (ucscf->port == NGX_CONF_UNSET_UINT) {
         ucscf->port = 0;
@@ -4028,10 +4037,14 @@ ngx_http_upstream_check_init_shm_zone(ngx_shm_zone_t *shm_zone, void *data)
         ngx_memcpy(peer_shm->sockaddr, peer[i].peer_addr->sockaddr,
                    peer_shm->socklen);
 
+        ucscf = peer[i].conf;
+
+        peer_shm->upstream_name = &ucscf->upstream_srv_conf->host;
+
         if (opeers_shm) {
 
-            opeer_shm = ngx_http_upstream_check_find_shm_peer(opeers_shm,
-                                                              peer[i].peer_addr);
+            opeer_shm = ngx_http_upstream_check_find_shm_peer(
+                opeers_shm, peer[i].upstream_name, peer[i].peer_addr);
             if (opeer_shm) {
                 ngx_log_debug1(NGX_LOG_DEBUG_HTTP, shm_zone->shm.log, 0,
                                "http upstream check, inherit opeer: %V ",
@@ -4047,7 +4060,6 @@ ngx_http_upstream_check_init_shm_zone(ngx_shm_zone_t *shm_zone, void *data)
             }
         }
 
-        ucscf = peer[i].conf;
         rc = ngx_http_upstream_check_init_shm_peer(peer_shm, NULL,
                                                    ucscf->default_down, pool,
                                                    &peer[i].peer_addr->name);
@@ -4112,14 +4124,22 @@ ngx_shared_memory_find(ngx_cycle_t *cycle, ngx_str_t *name, void *tag)
 
 static ngx_http_upstream_check_peer_shm_t *
 ngx_http_upstream_check_find_shm_peer(ngx_http_upstream_check_peers_shm_t *p,
-    ngx_addr_t *addr)
+    ngx_str_t *us_name, ngx_addr_t *addr)
 {
     ngx_uint_t                          i;
     ngx_http_upstream_check_peer_shm_t *peer_shm;
+    ngx_str_t                          *shm_us_name;
+
 
     for (i = 0; i < p->number; i++) {
 
         peer_shm = &p->peers[i];
+        shm_us_name = peer_shm->upstream_name;
+
+        if (us_name->len != shm_us_name->len ||
+                ngx_strncmp(us_name, shm_us_name, us_name->len) != 0) {
+           continue;
+        }
 
         if (addr->socklen != peer_shm->socklen) {
             continue;
