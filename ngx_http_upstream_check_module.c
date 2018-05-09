@@ -246,6 +246,7 @@ struct ngx_http_upstream_check_srv_conf_s {
 
     ngx_uint_t                               default_down;
     ngx_uint_t                               ssl;
+    ngx_uint_t                               ssl_protocols;
 };
 
 
@@ -316,6 +317,14 @@ typedef enum {
     ngx_http_fastcgi_st_padding
 } ngx_http_fastcgi_state_e;
 
+static ngx_conf_bitmask_t  ngx_http_check_ssl_protocols[] = {
+    { ngx_string("SSLv2"), NGX_SSL_SSLv2 },
+    { ngx_string("SSLv3"), NGX_SSL_SSLv3 },
+    { ngx_string("TLSv1"), NGX_SSL_TLSv1 },
+    { ngx_string("TLSv1.1"), NGX_SSL_TLSv1_1 },
+    { ngx_string("TLSv1.2"), NGX_SSL_TLSv1_2 },
+    { ngx_null_string, 0 }
+};
 
 static ngx_http_fastcgi_request_start_t  ngx_http_fastcgi_request_start = {
     { 1,                                               /* version */
@@ -457,6 +466,9 @@ static char *ngx_http_upstream_check_http_body(ngx_conf_t *cf,
 static char *ngx_http_upstream_check_fastcgi_params(ngx_conf_t *cf,
     ngx_command_t *cmd, void *conf);
 
+static char *ngx_http_upstream_check_ssl_protocols(ngx_conf_t *cf,
+    ngx_command_t *cmd, void *conf);
+
 static char *ngx_http_upstream_check_shm_size(ngx_conf_t *cf,
     ngx_command_t *cmd, void *conf);
 
@@ -529,6 +541,13 @@ static ngx_command_t  ngx_http_upstream_check_commands[] = {
     { ngx_string("check_http_send"),
       NGX_HTTP_UPS_CONF|NGX_CONF_TAKE1,
       ngx_http_upstream_check_http_send,
+      0,
+      0,
+      NULL },
+
+    { ngx_string("check_ssl_protocols"),
+      NGX_HTTP_UPS_CONF|NGX_CONF_1MORE,
+      ngx_http_upstream_check_ssl_protocols,
       0,
       0,
       NULL },
@@ -1200,13 +1219,12 @@ ngx_http_upstream_check_ssl_init(ngx_http_upstream_check_peer_t *peer,
     ngx_http_upstream_check_srv_conf_t *ucscf, ngx_connection_t *c)
 {
     ngx_int_t  rc;
-    ngx_uint_t protocols, flags;
+    ngx_uint_t flags;
 
     ngx_memzero(&peer->ssl, sizeof(ngx_ssl_t));
 
-    protocols = NGX_SSL_TLSv1|NGX_SSL_SSLv2|NGX_SSL_SSLv3;
     flags = NGX_SSL_BUFFER|NGX_SSL_CLIENT;
-    if (ngx_ssl_create(&peer->ssl, protocols, NULL) != NGX_OK ||
+    if (ngx_ssl_create(&peer->ssl, ucscf->ssl_protocols, NULL) != NGX_OK ||
         ngx_ssl_create_connection(&peer->ssl, c, flags) != NGX_OK) {
         goto failed;
     }
@@ -3320,6 +3338,8 @@ ngx_http_upstream_check(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ucscf->rise_count = rise;
     ucscf->default_down = default_down;
     ucscf->ssl = ssl;
+    // The default ssl protocols
+    ucscf->ssl_protocols = NGX_SSL_TLSv1|NGX_SSL_SSLv2|NGX_SSL_SSLv3;
 
     if (ucscf->check_type_conf == NGX_CONF_UNSET_PTR) {
         ngx_str_set(&s, "tcp");
@@ -3421,6 +3441,41 @@ ngx_http_upstream_check_fastcgi_params(ngx_conf_t *cf, ngx_command_t *cmd,
 
     *k = value[1];
     *v = value[2];
+
+    return NGX_CONF_OK;
+}
+
+static char *
+ngx_http_upstream_check_ssl_protocols(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf)
+{
+    ngx_http_upstream_check_srv_conf_t  *ucscf;
+    ngx_uint_t          np, i, m;
+    ngx_str_t           *value;
+    ngx_conf_bitmask_t  *mask;
+
+    ucscf = ngx_http_conf_get_module_srv_conf(cf, ngx_http_upstream_check_module);
+    value = cf->args->elts;
+    mask = ngx_http_check_ssl_protocols;
+
+    // We are overwriting the default values, not only turning the specified protocol on.
+    np = 0;
+    for (i = 1; i < cf->args->nelts; i++) {
+        for (m = 0; mask[m].name.len != 0; m++) {
+            if (mask[m].name.len != value[i].len
+                || ngx_strcasecmp(mask[m].name.data, value[i].data) != 0)
+            {
+                continue;
+            }
+            np |= mask[m].mask;
+            break;
+        }
+        if (mask[m].name.len == 0) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "invalid value \"%s\"", value[i].data);
+            return NGX_CONF_ERROR;
+        }
+    }
+    ucscf->ssl_protocols = np;
 
     return NGX_CONF_OK;
 }
