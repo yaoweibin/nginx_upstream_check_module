@@ -1168,7 +1168,7 @@ ngx_http_upstream_check_connect_handler(ngx_event_t *event)
     c->sendfile = 0;
     c->read->log = c->log;
     c->write->log = c->log;
-    c->pool = ngx_create_pool(ngx_pagesize, ngx_cycle->log);
+    c->pool = ngx_create_pool(NGX_CYCLE_POOL_SIZE, ngx_cycle->log);
 #if (NGX_HTTP_SSL)
     if (is_https_check_type && rc == NGX_AGAIN) {
         c->write->handler = ngx_http_upstream_do_ssl_handshake;
@@ -1197,10 +1197,7 @@ static void free_SSL_data(ngx_http_upstream_check_peer_t *peer){
 		ngx_connection_t *c = peer->pc.connection;
     if (is_https_check(peer) &&
 				c->ssl) {
-        ngx_ssl_free_buffer(c);
-        c->ssl->no_wait_shutdown = 1;
-        c->ssl->no_send_shutdown = 1;
-        ngx_ssl_shutdown(c);
+        SSL_free(c->ssl->connection);
         c->ssl = NULL;
         }
 }
@@ -1213,7 +1210,7 @@ static void ngx_http_upstream_do_ssl_handshake(ngx_event_t *event) {
     c = event->data;
     peer = c -> data;
     ucscf = peer->conf;
-    rc = ngx_ssl_create_connection(&ucscf->ssl, c, NGX_SSL_CLIENT );
+    rc = ngx_ssl_create_connection(&ucscf->ssl, c, NGX_SSL_BUFFER|NGX_SSL_CLIENT);
     if (rc != NGX_OK){
       return;
     }
