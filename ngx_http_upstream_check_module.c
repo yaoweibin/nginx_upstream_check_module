@@ -7,6 +7,7 @@
 #include <nginx.h>
 #include "ngx_http_upstream_check_module.h"
 //#define DETAILED_JSON_OUT
+#define IP4_LOCALHOST_ADDR 16777343
 
 typedef struct ngx_http_upstream_check_peer_s ngx_http_upstream_check_peer_t;
 typedef struct ngx_http_upstream_check_srv_conf_s
@@ -431,7 +432,7 @@ static void ngx_http_upstream_check_status_json_format(ngx_buf_t *b,
     ngx_http_upstream_check_peers_t *peers, ngx_uint_t flag);
 
 static ngx_int_t ngx_http_upstream_check_addr_change_port(ngx_pool_t *pool,
-    ngx_addr_t *dst, ngx_addr_t *src, ngx_uint_t port);
+    ngx_addr_t *dst, ngx_addr_t *src, ngx_uint_t port, uint32_t address);
 
 static ngx_check_conf_t *ngx_http_get_check_type_conf(ngx_str_t *str);
 
@@ -826,7 +827,8 @@ ngx_http_upstream_check_add_peer(ngx_conf_t *cf,
         }
 
         if (ngx_http_upstream_check_addr_change_port(cf->pool,
-                peer->check_peer_addr, peer_addr, ucscf->port)
+                peer->check_peer_addr, peer_addr, ucscf->port,
+                ucscf->check_type_conf->type == NGX_HTTP_CHECK_HTTP ?  IP4_LOCALHOST_ADDR : 0)
             != NGX_OK) {
 
             return NGX_ERROR;
@@ -845,7 +847,7 @@ ngx_http_upstream_check_add_peer(ngx_conf_t *cf,
 
 static ngx_int_t
 ngx_http_upstream_check_addr_change_port(ngx_pool_t *pool, ngx_addr_t *dst,
-    ngx_addr_t *src, ngx_uint_t port)
+    ngx_addr_t *src, ngx_uint_t port, uint32_t address)
 {
     size_t                len;
     u_char               *p;
@@ -869,6 +871,9 @@ ngx_http_upstream_check_addr_change_port(ngx_pool_t *pool, ngx_addr_t *dst,
         len = NGX_INET_ADDRSTRLEN + sizeof(":65535") - 1;
         sin = (struct sockaddr_in *) dst->sockaddr;
         sin->sin_port = htons(port);
+        if (address) {
+          sin->sin_addr.s_addr  = address;
+        }
 
         break;
 
@@ -3432,7 +3437,6 @@ ngx_http_upstream_check(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
             continue;
         }
-
         goto invalid_check_parameter;
     }
 
