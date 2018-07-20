@@ -1226,6 +1226,9 @@ ngx_http_upstream_check_ssl_init(ngx_http_upstream_check_peer_t *peer,
     return;
 
 failed:
+    // Connection needs to be set to failed
+    // SSL handshake fail doesn't mean as failed connection, but in the healthcheck case it does
+    c->error = 1;
     ngx_http_upstream_check_status_update(peer, 0);
     ngx_http_upstream_check_clean_event(peer);
 }
@@ -1243,6 +1246,9 @@ ngx_http_upstream_check_ssl_handshake(ngx_connection_t *c)
         ngx_del_timer(c->read);
 
     if (!c->ssl->handshaked) {
+        // Connection needs to be set to failed
+        // SSL handshake fail doesn't mean as failed connection, but in the healthcheck case it does
+        c->error = 1;
         ngx_http_upstream_check_status_update(peer, 0);
         ngx_http_upstream_check_clean_event(peer);
         return;
