@@ -90,7 +90,7 @@ GET /status
 Content-Type: text/html
 --- response_body_like: ^.*Check upstream server number: 6.*$
 
-=== TEST 3: the http_check interface, csv 
+=== TEST 3: the http_check interface, csv
 --- http_config
 upstream backend {
     server 127.0.0.1:1971;
@@ -130,7 +130,7 @@ GET /status
 Content-Type: text/plain
 --- response_body_like: ^.*$
 
-=== TEST 4: the http_check interface, json 
+=== TEST 4: the http_check interface, json
 --- http_config
 upstream backend {
     server 127.0.0.1:1971;
@@ -247,7 +247,7 @@ GET /status?format=json
 Content-Type: application/json
 --- response_body_like: ^.*"total": 6,.*$
 
-=== TEST 7: the http_check interface, default json, request html 
+=== TEST 7: the http_check interface, default json, request html
 --- http_config
 upstream backend {
     server 127.0.0.1:1971;
@@ -335,7 +335,7 @@ upstream backend {
     server 127.0.0.1:1974;
     server 127.0.0.1:1975;
 
-    check interval=3000 rise=1 fall=1 timeout=1000 type=http;
+    check interval=500 rise=1 fall=1 timeout=1000 type=http;
     check_http_send "GET / HTTP/1.0\r\nConnection: keep-alive\r\n\r\n";
     check_http_expect_alive http_2xx http_3xx;
 }
@@ -355,6 +355,9 @@ server {
     }
 
     location /status {
+        rewrite_by_lua_block {
+            ngx.sleep(1)
+        }
         check_status html;
     }
 
@@ -374,7 +377,7 @@ upstream backend {
     server 127.0.0.1:1974;
     server 127.0.0.1:1975;
 
-    check interval=3000 rise=1 fall=1 timeout=1000 type=http;
+    check interval=500 rise=1 fall=1 timeout=1000 type=http;
     check_http_send "GET / HTTP/1.0\r\nConnection: keep-alive\r\n\r\n";
     check_http_expect_alive http_2xx http_3xx;
 }
@@ -394,6 +397,9 @@ server {
     }
 
     location /status {
+        rewrite_by_lua_block {
+            ngx.sleep(1)
+        }
         check_status csv;
     }
 
@@ -413,7 +419,7 @@ upstream backend {
     server 127.0.0.1:1974;
     server 127.0.0.1:1975;
 
-    check interval=3000 rise=1 fall=1 timeout=2000 type=http;
+    check interval=500 rise=1 fall=1 timeout=2000 type=http;
     check_http_send "GET / HTTP/1.0\r\nConnection: keep-alive\r\n\r\n";
     check_http_expect_alive http_2xx http_3xx;
 }
@@ -433,6 +439,9 @@ server {
     }
 
     location /status {
+        rewrite_by_lua_block {
+            ngx.sleep(1)
+        }
         check_status json;
     }
 
