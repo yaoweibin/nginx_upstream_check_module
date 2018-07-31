@@ -77,6 +77,8 @@ typedef struct {
 
     ngx_pid_t                                owner;
 
+    ngx_str_t                               *upstream_name;
+
     ngx_msec_t                               access_time;
 
     ngx_uint_t                               fall_count;
@@ -221,6 +223,7 @@ typedef struct {
 
 
 struct ngx_http_upstream_check_srv_conf_s {
+    ngx_http_upstream_srv_conf_t            *upstream_srv_conf;
     ngx_uint_t                               port;
     ngx_uint_t                               fall_count;
     ngx_uint_t                               rise_count;
@@ -236,6 +239,7 @@ struct ngx_http_upstream_check_srv_conf_s {
         ngx_uint_t                           status_alive;
     } code;
 
+    ngx_str_t                                body;
     ngx_array_t                             *fastcgi_params;
 
     ngx_uint_t                               default_down;
@@ -435,6 +439,8 @@ static char *ngx_http_upstream_check_http_send(ngx_conf_t *cf,
     ngx_command_t *cmd, void *conf);
 static char *ngx_http_upstream_check_http_expect_alive(ngx_conf_t *cf,
     ngx_command_t *cmd, void *conf);
+static char *ngx_http_upstream_check_http_body(ngx_conf_t *cf,
+    ngx_command_t *cmd, void *conf);
 
 static char *ngx_http_upstream_check_fastcgi_params(ngx_conf_t *cf,
     ngx_command_t *cmd, void *conf);
@@ -467,7 +473,8 @@ static ngx_int_t ngx_http_upstream_check_get_shm_name(ngx_str_t *shm_name,
 static ngx_shm_zone_t *ngx_shared_memory_find(ngx_cycle_t *cycle,
     ngx_str_t *name, void *tag);
 static ngx_http_upstream_check_peer_shm_t *
-ngx_http_upstream_check_find_shm_peer(ngx_http_upstream_check_peers_shm_t *peers_shm,
+ngx_http_upstream_check_find_shm_peer(
+    ngx_http_upstream_check_peers_shm_t *peers_shm, ngx_str_t *us_name,
     ngx_addr_t *addr);
 
 static ngx_int_t ngx_http_upstream_check_init_shm_peer(
@@ -517,6 +524,13 @@ static ngx_command_t  ngx_http_upstream_check_commands[] = {
     { ngx_string("check_http_expect_alive"),
       NGX_HTTP_UPS_CONF|NGX_CONF_1MORE,
       ngx_http_upstream_check_http_expect_alive,
+      0,
+      0,
+      NULL },
+
+    { ngx_string("check_http_body"),
+      NGX_HTTP_UPS_CONF|NGX_CONF_TAKE1,
+      ngx_http_upstream_check_http_body,
       0,
       0,
       NULL },
@@ -1146,7 +1160,7 @@ ngx_http_upstream_check_connect_handler(ngx_event_t *event)
     c->sendfile = 0;
     c->read->log = c->log;
     c->write->log = c->log;
-    c->pool = peer->pool;
+    c->pool = ngx_create_pool(NGX_CYCLE_POOL_SIZE, ngx_cycle->log);
 
 upstream_check_connect_done:
     peer->state = NGX_HTTP_CHECK_CONNECT_DONE;
@@ -1563,7 +1577,8 @@ ngx_http_upstream_check_http_parse(ngx_http_upstream_check_peer_t *peer)
                        "http_parse: code_n: %ui, conf: %ui",
                        code_n, ucscf->code.status_alive);
 
-        if (code_n & ucscf->code.status_alive) {
+        if (code_n & ucscf->code.status_alive && (ucscf->body.len == 0 ||
+            ngx_strstr(ctx->recv.pos, ucscf->body.data) != NULL)) {
             return NGX_OK;
         } else {
             return NGX_ERROR;
@@ -2562,6 +2577,10 @@ ngx_http_upstream_check_clean_event(ngx_http_upstream_check_peer_t *peer)
         } else {
             ngx_close_connection(c);
             peer->pc.connection = NULL;
+            if (c->pool) {
+               ngx_destroy_pool(c->pool);
+               c->pool=NULL;
+            }
         }
     }
 
@@ -3256,6 +3275,24 @@ ngx_http_upstream_check_http_send(ngx_conf_t *cf, ngx_command_t *cmd,
 
 
 static char *
+ngx_http_upstream_check_http_body(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf)
+{
+    ngx_str_t                           *value;
+    ngx_http_upstream_check_srv_conf_t  *ucscf;
+
+    value = cf->args->elts;
+
+    ucscf = ngx_http_conf_get_module_srv_conf(cf,
+                                              ngx_http_upstream_check_module);
+
+    ucscf->body = value[1];
+
+    return NGX_CONF_OK;
+}
+
+
+static char *
 ngx_http_upstream_check_fastcgi_params(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf)
 {
@@ -3596,6 +3633,7 @@ ngx_http_upstream_check_create_srv_conf(ngx_conf_t *cf)
         return NULL;
     }
 
+    ucscf->upstream_srv_conf = NGX_CONF_UNSET_PTR;
     ucscf->port = NGX_CONF_UNSET_UINT;
     ucscf->fall_count = NGX_CONF_UNSET_UINT;
     ucscf->rise_count = NGX_CONF_UNSET_UINT;
@@ -3637,6 +3675,10 @@ ngx_http_upstream_check_init_srv_conf(ngx_conf_t *cf, void *conf)
     }
 
     ucscf = ngx_http_conf_upstream_srv_conf(us, ngx_http_upstream_check_module);
+
+    if (ucscf->upstream_srv_conf == NGX_CONF_UNSET_PTR) {
+        ucscf->upstream_srv_conf = us;
+    }
 
     if (ucscf->port == NGX_CONF_UNSET_UINT) {
         ucscf->port = 0;
@@ -3896,10 +3938,14 @@ ngx_http_upstream_check_init_shm_zone(ngx_shm_zone_t *shm_zone, void *data)
         ngx_memcpy(peer_shm->sockaddr, peer[i].peer_addr->sockaddr,
                    peer_shm->socklen);
 
+        ucscf = peer[i].conf;
+
+        peer_shm->upstream_name = &ucscf->upstream_srv_conf->host;
+
         if (opeers_shm) {
 
-            opeer_shm = ngx_http_upstream_check_find_shm_peer(opeers_shm,
-                                                              peer[i].peer_addr);
+            opeer_shm = ngx_http_upstream_check_find_shm_peer(
+                opeers_shm, peer[i].upstream_name, peer[i].peer_addr);
             if (opeer_shm) {
                 ngx_log_debug1(NGX_LOG_DEBUG_HTTP, shm_zone->shm.log, 0,
                                "http upstream check, inherit opeer: %V ",
@@ -3980,14 +4026,22 @@ ngx_shared_memory_find(ngx_cycle_t *cycle, ngx_str_t *name, void *tag)
 
 static ngx_http_upstream_check_peer_shm_t *
 ngx_http_upstream_check_find_shm_peer(ngx_http_upstream_check_peers_shm_t *p,
-    ngx_addr_t *addr)
+    ngx_str_t *us_name, ngx_addr_t *addr)
 {
     ngx_uint_t                          i;
     ngx_http_upstream_check_peer_shm_t *peer_shm;
+    ngx_str_t                          *shm_us_name;
+
 
     for (i = 0; i < p->number; i++) {
 
         peer_shm = &p->peers[i];
+        shm_us_name = peer_shm->upstream_name;
+
+        if (us_name->len != shm_us_name->len ||
+                ngx_strncmp(us_name, shm_us_name, us_name->len) != 0) {
+           continue;
+        }
 
         if (addr->socklen != peer_shm->socklen) {
             continue;
