@@ -3207,7 +3207,7 @@ static void
 ngx_http_upstream_check_status_json_format(ngx_buf_t *b,
     ngx_http_upstream_check_peers_t *peers, ngx_uint_t flag)
 {
-    ngx_uint_t                       count, i, last;
+    ngx_uint_t                       count, i;
     ngx_http_upstream_check_peer_t  *peer;
 
     peer = peers->peers.elts;
@@ -3231,9 +3231,9 @@ ngx_http_upstream_check_status_json_format(ngx_buf_t *b,
 
         count++;
     }
-
-    b->last = ngx_snprintf(b->last, b->end - b->last,
+	
     hosts_health_rbtree *health_status_tree = collectPeersStatusByHost(peers, flag);
+    b->last = ngx_snprintf(b->last, b->end - b->last,
             "{\"servers\": {\n"
             "  \"total\": %ui,\n"
             "  \"generation\": %ui,\n"
