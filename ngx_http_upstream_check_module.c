@@ -6,7 +6,8 @@
 
 #include <nginx.h>
 #include "ngx_http_upstream_check_module.h"
-
+//#define DETAILED_JSON_OUT
+#define IP4_LOCALHOST_ADDR 16777343
 
 typedef struct ngx_http_upstream_check_peer_s ngx_http_upstream_check_peer_t;
 typedef struct ngx_http_upstream_check_srv_conf_s

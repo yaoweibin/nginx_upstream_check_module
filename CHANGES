@@ -1,0 +1,8 @@
+####
+Merged code from @zenedge
+https://github.com/zenedge/nginx_upstream_check_module
+for check_http_body
+
+Merged code from @thomsonreuters
+https://github.com/thomsonreuters/nginx_upstream_check_module
+for check type https
