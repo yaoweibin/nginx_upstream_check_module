@@ -3232,8 +3232,8 @@ ngx_http_upstream_check_status_json_format(ngx_buf_t *b,
         count++;
     }
 
-    hosts_health_rbtree *health_status_tree = collectPeersStatusByHost(peers, flag);
     b->last = ngx_snprintf(b->last, b->end - b->last,
+    hosts_health_rbtree *health_status_tree = collectPeersStatusByHost(peers, flag);
             "{\"servers\": {\n"
             "  \"total\": %ui,\n"
             "  \"generation\": %ui,\n"
