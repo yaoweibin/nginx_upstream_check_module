@@ -3207,7 +3207,7 @@ static void
 ngx_http_upstream_check_status_json_format(ngx_buf_t *b,
     ngx_http_upstream_check_peers_t *peers, ngx_uint_t flag)
 {
-    ngx_uint_t                       count, i;
+    ngx_uint_t                       count, i, last;
     ngx_http_upstream_check_peer_t  *peer;
 
     peer = peers->peers.elts;
@@ -3231,8 +3231,7 @@ ngx_http_upstream_check_status_json_format(ngx_buf_t *b,
 
         count++;
     }
-	
-    hosts_health_rbtree *health_status_tree = collectPeersStatusByHost(peers, flag);
+
     b->last = ngx_snprintf(b->last, b->end - b->last,
             "{\"servers\": {\n"
             "  \"total\": %ui,\n"
@@ -3241,11 +3240,7 @@ ngx_http_upstream_check_status_json_format(ngx_buf_t *b,
             count,
             ngx_http_upstream_check_shm_generation);
 
-  #ifdef DETAILED_JSON_OUT
-    ngx_uint_t last;
     last = peers->peers.nelts - 1;
-    b->last = ngx_snprintf(b->last, b->end - b->last,
-            ", \n\"detailed\": [\n");
     for (i = 0; i < peers->peers.nelts; i++) {
 
         if (flag & NGX_CHECK_STATUS_DOWN) {
@@ -3282,47 +3277,6 @@ ngx_http_upstream_check_status_json_format(ngx_buf_t *b,
                 (i == last) ? "" : ",");
     }
 
-    b->last = ngx_snprintf(b->last, b->end - b->last,
-            "  ]");
-#endif
-    b->last = ngx_snprintf(b->last, b->end - b->last,
-            ",\n  \"brief\":[\n");
-    int cntr = 0;
-    for (i = 0; i < peers->peers.nelts; i++) {
-        ngx_str_node_t   *sn;
-        uint32_t          hash;
-
-        ngx_http_upstream_srv_conf_t* up = findUpstream(peer[i].upstream_name);
-        ngx_str_t *hst = findHostname(up, peer[i].peer_addr);
-        hash = ngx_crc32_long(hst->data, hst->len);
-
-        sn = ngx_str_rbtree_lookup(&health_status_tree->tree, hst, hash);
-        if (!sn){
-          continue;
-        }
-        ngx_rbtree_delete(&health_status_tree->tree, &sn->node);
-        b->last = ngx_snprintf(b->last, b->end - b->last,
-                "    {\"index\": %ui, "
-                "\"upstream\": \"%V\", "
-                "\"name\": \"%V\", "
-                "\"status\": \"%s\""
-                "\"rise\": %ui, "
-                "\"fall\": %ui, "
-                "\"type\": \"%V\", "
-                "\"port\": %ui}",
-                "%s\n",
-                cntr ++,
-                peer[i].upstream_name,
-                hst,
-                sn->node.data ? "down" : "up",
-		peer[i].shm->rise_count,
-                peer[i].shm->fall_count,
-                &peer[i].conf->check_type_conf->name,
-                peer[i].conf->port,
-                (health_status_tree->tree.root == &health_status_tree->sentinel) ? "": ",");
-        free(sn);
-    }
-    free(health_status_tree);
     b->last = ngx_snprintf(b->last, b->end - b->last,
             "  ]\n");
 
