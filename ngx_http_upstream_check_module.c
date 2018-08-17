@@ -247,6 +247,7 @@ struct ngx_http_upstream_check_srv_conf_s {
     ngx_uint_t                               default_down;
     ngx_uint_t                               ssl;
     ngx_uint_t                               ssl_protocols;
+    ngx_str_t                                ssl_server_name;
 };
 
 
@@ -469,6 +470,9 @@ static char *ngx_http_upstream_check_fastcgi_params(ngx_conf_t *cf,
 static char *ngx_http_upstream_check_ssl_protocols(ngx_conf_t *cf,
     ngx_command_t *cmd, void *conf);
 
+static char *ngx_http_upstream_check_ssl_server_name(ngx_conf_t *cf,
+    ngx_command_t *cmd, void *conf);
+
 static char *ngx_http_upstream_check_shm_size(ngx_conf_t *cf,
     ngx_command_t *cmd, void *conf);
 
@@ -548,6 +552,13 @@ static ngx_command_t  ngx_http_upstream_check_commands[] = {
     { ngx_string("check_ssl_protocols"),
       NGX_HTTP_UPS_CONF|NGX_CONF_1MORE,
       ngx_http_upstream_check_ssl_protocols,
+      0,
+      0,
+      NULL },
+
+    { ngx_string("check_ssl_server_name"),
+      NGX_HTTP_UPS_CONF|NGX_CONF_TAKE1,
+      ngx_http_upstream_check_ssl_server_name,
       0,
       0,
       NULL },
@@ -1233,6 +1244,20 @@ ngx_http_upstream_check_ssl_init(ngx_http_upstream_check_peer_t *peer,
     if (ngx_ssl_create(&peer->ssl, ucscf->ssl_protocols, NULL) != NGX_OK ||
         ngx_ssl_create_connection(&peer->ssl, c, flags) != NGX_OK) {
         goto failed;
+    }
+
+    if (ucscf->ssl_server_name.len != 0) {
+        ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0,
+            "http check - using ssl server name: \"%*s\"",
+            ucscf->ssl_server_name.len, ucscf->ssl_server_name.data);
+#ifdef SSL_CTRL_SET_TLSEXT_HOSTNAME
+        if (SSL_set_tlsext_host_name(c->ssl->connection, ucscf->ssl_server_name.data) == 0) {
+            goto failed;
+        }
+#else
+        ngx_log_error(NGX_LOG_ERR, c->log, 0,
+            "http check - SNI disabled because the current version of OpenSSL lacks the support");
+#endif
     }
 
     rc = ngx_ssl_handshake(c);
@@ -3486,6 +3511,21 @@ ngx_http_upstream_check_ssl_protocols(ngx_conf_t *cf, ngx_command_t *cmd,
     return NGX_CONF_OK;
 }
 
+static char *
+ngx_http_upstream_check_ssl_server_name(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf)
+{
+    ngx_str_t                           *value;
+    ngx_http_upstream_check_srv_conf_t  *ucscf;
+
+    value = cf->args->elts;
+
+    ucscf = ngx_http_conf_get_module_srv_conf(cf, ngx_http_upstream_check_module);
+
+    ucscf->ssl_server_name = value[1];
+
+    return NGX_CONF_OK;
+}
 
 static char *
 ngx_http_upstream_check_http_expect_alive(ngx_conf_t *cf, ngx_command_t *cmd,
