@@ -84,13 +84,16 @@ Directives
         3.  *http* sends a http request packet, receives and parses the http
             response to diagnose if the upstream server is alive.
 
-        4.  *mysql* connects to the mysql server, receives the greeting
+        4.  *https* sends a https (SSL) request packet, receives and parses the https
             response to diagnose if the upstream server is alive.
 
-        5.  *ajp* sends a AJP Cping packet, receives and parses the AJP
+        5.  *mysql* connects to the mysql server, receives the greeting
+            response to diagnose if the upstream server is alive.
+
+        6.  *ajp* sends a AJP Cping packet, receives and parses the AJP
             Cpong response to diagnose if the upstream server is alive.
 
-        6.  *fastcgi* send a fastcgi request, receives and parses the
+        7.  *fastcgi* send a fastcgi request, receives and parses the
             fastcgi response to diagnose if the upstream server is alive.
 
   check_http_send
