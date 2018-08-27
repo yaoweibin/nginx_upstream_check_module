@@ -127,6 +127,20 @@ Directives
     description: If specified and check type is set to "http" - healthcheck will search for the
     given substring in the response body and will fail if the substring is not found
 
+  check_ssl_server_name
+    syntax: *check_ssl_server_name server_name*
+
+    default: *none*
+
+    context: *upstream*
+
+    description: If specified and check type="http" and ssl=true - healthcheck will try to send the
+    configured server_name in SNI when making the SSL connection.
+    *NOTE*: for this to work - the OpenSSL library that Nginx is built against has to support
+    the SNI TLS extension (`SSL_set_tlsext_host_name()` function). If this function is not
+    supported - "check_ssl_server_name" parameter for healthchecks will not be available in the
+    built Nginx (you will get a configuration error if this directive is used).
+
   check_keepalive_requests
     syntax: *check_keepalive_requests num*
 
