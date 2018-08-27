@@ -18,6 +18,7 @@ Synopsis
             #check interval=3000 rise=2 fall=5 timeout=1000 type=http;
             #check_http_send "HEAD / HTTP/1.0\r\n\r\n";
             #check_http_expect_alive http_2xx http_3xx;
+            #check_http_body "online";
         }
 
         server {
@@ -112,6 +113,16 @@ Directives
 
     description: These status codes indicate the upstream server's http
     response is ok, the backend is alive.
+
+  check_http_body
+    syntax: *check_http_body body_substring*
+
+    default: *none*
+
+    context: *upstream*
+
+    description: If specified and check type is set to "http" - healthcheck will search for the
+    given substring in the response body and will fail if the substring is not found
 
   check_keepalive_requests
     syntax: *check_keepalive_requests num*
