@@ -247,7 +247,10 @@ struct ngx_http_upstream_check_srv_conf_s {
     ngx_uint_t                               default_down;
     ngx_uint_t                               ssl;
     ngx_uint_t                               ssl_protocols;
+
+#ifdef SSL_CTRL_SET_TLSEXT_HOSTNAME
     ngx_str_t                                ssl_server_name;
+#endif
 };
 
 
@@ -1240,19 +1243,16 @@ ngx_http_upstream_check_ssl_init(ngx_http_upstream_check_peer_t *peer,
         goto failed;
     }
 
+#ifdef SSL_CTRL_SET_TLSEXT_HOSTNAME
     if (ucscf->ssl_server_name.len != 0) {
         ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0,
             "http check - using ssl server name: \"%*s\"",
             ucscf->ssl_server_name.len, ucscf->ssl_server_name.data);
-#ifdef SSL_CTRL_SET_TLSEXT_HOSTNAME
         if (SSL_set_tlsext_host_name(c->ssl->connection, ucscf->ssl_server_name.data) == 0) {
             goto failed;
         }
-#else
-        ngx_log_error(NGX_LOG_ERR, c->log, 0,
-            "http check - SNI disabled because the current version of OpenSSL lacks the support");
-#endif
     }
+#endif
 
     rc = ngx_ssl_handshake(c);
     if (rc == NGX_ERROR) {
@@ -3509,6 +3509,7 @@ static char *
 ngx_http_upstream_check_ssl_server_name(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf)
 {
+#ifdef SSL_CTRL_SET_TLSEXT_HOSTNAME
     ngx_str_t                           *value;
     ngx_http_upstream_check_srv_conf_t  *ucscf;
 
@@ -3519,6 +3520,12 @@ ngx_http_upstream_check_ssl_server_name(ngx_conf_t *cf, ngx_command_t *cmd,
     ucscf->ssl_server_name = value[1];
 
     return NGX_CONF_OK;
+#else
+    ngx_log_error(NGX_LOG_ERR, c->log, 0,
+        "http check - check_ssl_server_name (SNI) disabled because the OpenSSL version that Nginx"
+        " was built against does not support it (SSL_set_tlsext_host_name)");
+    return NGX_CONF_ERROR;
+#endif
 }
 
 static char *
