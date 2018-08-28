@@ -327,6 +327,9 @@ static ngx_conf_bitmask_t  ngx_http_check_ssl_protocols[] = {
     { ngx_string("TLSv1"), NGX_SSL_TLSv1 },
     { ngx_string("TLSv1.1"), NGX_SSL_TLSv1_1 },
     { ngx_string("TLSv1.2"), NGX_SSL_TLSv1_2 },
+#ifdef NGX_SSL_TLSv1_3
+    { ngx_string("TLSv1.3"), NGX_SSL_TLSv1_3 },
+#endif
     { ngx_null_string, 0 }
 };
 
@@ -3369,8 +3372,13 @@ ngx_http_upstream_check(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ucscf->rise_count = rise;
     ucscf->default_down = default_down;
     ucscf->ssl = ssl;
+
     // The default ssl protocols
+#ifdef NGX_SSL_TLSv1_3
+    ucscf->ssl_protocols = NGX_SSL_SSLv2|NGX_SSL_SSLv3|NGX_SSL_TLSv1|NGX_SSL_TLSv1_1|NGX_SSL_TLSv1_2|NGX_SSL_TLSv1_3;
+#else
     ucscf->ssl_protocols = NGX_SSL_SSLv2|NGX_SSL_SSLv3|NGX_SSL_TLSv1|NGX_SSL_TLSv1_1|NGX_SSL_TLSv1_2;
+#endif
 
     if (ucscf->check_type_conf == NGX_CONF_UNSET_PTR) {
         ngx_str_set(&s, "tcp");
