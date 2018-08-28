@@ -141,6 +141,15 @@ Directives
     supported - "check_ssl_server_name" parameter for healthchecks will not be available in the
     built Nginx (you will get a configuration error if this directive is used).
 
+  check_ssl_protocols
+    syntax: *check_ssl_protocols protocols*
+
+    default: *SSLv2 SSLv3 TLSv1 TLSv1.1 TLSv1.2*
+
+    context: *upstream*
+
+    description: Configures allowed SSL protocols for https healthchecks
+
   check_keepalive_requests
     syntax: *check_keepalive_requests num*
 
