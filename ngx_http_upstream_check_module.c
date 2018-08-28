@@ -327,6 +327,9 @@ static ngx_conf_bitmask_t  ngx_http_check_ssl_protocols[] = {
     { ngx_string("TLSv1"), NGX_SSL_TLSv1 },
     { ngx_string("TLSv1.1"), NGX_SSL_TLSv1_1 },
     { ngx_string("TLSv1.2"), NGX_SSL_TLSv1_2 },
+#ifdef NGX_SSL_TLSv1_3
+    { ngx_string("TLSv1.3"), NGX_SSL_TLSv1_3 },
+#endif
     { ngx_null_string, 0 }
 };
 
@@ -654,27 +657,32 @@ static ngx_str_t fastcgi_default_params[] = {
  */
 static char sslv3_client_hello_pkt[] = {
     "\x16"                /* ContentType         : 0x16 = Hanshake           */
-    "\x03\x00"            /* ProtocolVersion     : 0x0300 = SSLv3            */
-    "\x00\x79"            /* ContentLength       : 0x79 bytes after this one */
+    "\x03\x01"            /* ProtocolVersion     : 0x0301 = TLSv1.0          */
+    "\x00\x6f"            /* ContentLength       : 0x6f bytes after this one */
     "\x01"                /* HanshakeType        : 0x01 = CLIENT HELLO       */
-    "\x00\x00\x75"        /* HandshakeLength     : 0x75 bytes after this one */
-    "\x03\x00"            /* Hello Version       : 0x0300 = v3               */
+    "\x00\x00\x6b"        /* HandshakeLength     : 0x6b bytes after this one */
+    "\x03\x03"            /* Hello Version       : 0x0303 = TLSv1.2          */
     "\x00\x00\x00\x00"    /* Unix GMT Time (s)   : filled with <now> (@0x0B) */
     NGX_SSL_RANDOM        /* Random              : must be exactly 28 bytes  */
     "\x00"                /* Session ID length   : empty (no session ID)     */
-    "\x00\x4E"            /* Cipher Suite Length : 78 bytes after this one   */
-    "\x00\x01" "\x00\x02" "\x00\x03" "\x00\x04" /* 39 most common ciphers :  */
-    "\x00\x05" "\x00\x06" "\x00\x07" "\x00\x08" /* 0x01...0x1B, 0x2F...0x3A  */
-    "\x00\x09" "\x00\x0A" "\x00\x0B" "\x00\x0C" /* This covers RSA/DH,       */
-    "\x00\x0D" "\x00\x0E" "\x00\x0F" "\x00\x10" /* various bit lengths,      */
-    "\x00\x11" "\x00\x12" "\x00\x13" "\x00\x14" /* SHA1/MD5, DES/3DES/AES... */
-    "\x00\x15" "\x00\x16" "\x00\x17" "\x00\x18"
-    "\x00\x19" "\x00\x1A" "\x00\x1B" "\x00\x2F"
-    "\x00\x30" "\x00\x31" "\x00\x32" "\x00\x33"
-    "\x00\x34" "\x00\x35" "\x00\x36" "\x00\x37"
-    "\x00\x38" "\x00\x39" "\x00\x3A"
+    "\x00\x1a"            /* Cipher Suite Length : \x1a bytes after this one */
+    "\xc0\x2b" "\xc0\x2f" "\xcc\xa9" "\xcc\xa8"  /* 13 modern ciphers        */
+    "\xc0\x0a" "\xc0\x09" "\xc0\x13" "\xc0\x14"
+    "\x00\x33" "\x00\x39" "\x00\x2f" "\x00\x35"
+    "\x00\x0a"
     "\x01"                /* Compression Length  : 0x01 = 1 byte for types   */
     "\x00"                /* Compression Type    : 0x00 = NULL compression   */
+    "\x00\x28"            /* Extensions length */
+    "\x00\x0a"            /* EC extension */
+    "\x00\x08"            /* extension length */
+    "\x00\x06"            /* curves length */
+    "\x00\x17" "\x00\x18" "\x00\x19" /* Three curves */
+    "\x00\x0d"            /* Signature extension */
+    "\x00\x18"            /* extension length */
+    "\x00\x16"            /* hash list length */
+    "\x04\x01" "\x05\x01" "\x06\x01" "\x02\x01"  /* 11 hash algorithms */
+    "\x04\x03" "\x05\x03" "\x06\x03" "\x02\x03"
+    "\x05\x02" "\x04\x02" "\x02\x02"
 };
 
 
@@ -1190,6 +1198,7 @@ ngx_http_upstream_check_connect_handler(ngx_event_t *event)
 
     if (rc == NGX_ERROR || rc == NGX_DECLINED) {
         ngx_http_upstream_check_status_update(peer, 0);
+        ngx_http_upstream_check_clean_event(peer);
         return;
     }
 
@@ -3363,8 +3372,13 @@ ngx_http_upstream_check(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ucscf->rise_count = rise;
     ucscf->default_down = default_down;
     ucscf->ssl = ssl;
+
     // The default ssl protocols
+#ifdef NGX_SSL_TLSv1_3
+    ucscf->ssl_protocols = NGX_SSL_SSLv2|NGX_SSL_SSLv3|NGX_SSL_TLSv1|NGX_SSL_TLSv1_1|NGX_SSL_TLSv1_2|NGX_SSL_TLSv1_3;
+#else
     ucscf->ssl_protocols = NGX_SSL_SSLv2|NGX_SSL_SSLv3|NGX_SSL_TLSv1|NGX_SSL_TLSv1_1|NGX_SSL_TLSv1_2;
+#endif
 
     if (ucscf->check_type_conf == NGX_CONF_UNSET_PTR) {
         ngx_str_set(&s, "tcp");
@@ -4320,5 +4334,12 @@ ngx_http_upstream_check_init_shm_peer(ngx_http_upstream_check_peer_shm_t *psh,
 static ngx_int_t
 ngx_http_upstream_check_init_process(ngx_cycle_t *cycle)
 {
+    ngx_http_upstream_check_main_conf_t *ucmcf;
+
+    ucmcf = ngx_http_cycle_get_module_main_conf(cycle, ngx_http_upstream_check_module);
+    if (ucmcf == NULL) {
+        return NGX_OK;
+    }
+
     return ngx_http_upstream_check_add_timers(cycle);
 }
