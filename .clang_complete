@@ -1,0 +1,8 @@
+-I../nginx/src/core
+-I../nginx/src/event
+-I../nginx/src/http
+-I../nginx/src/http/modules
+-I../nginx/src/misc
+-I../nginx/src/os/unix
+-I../nginx/src/os/win32
+-I../nginx/objs
