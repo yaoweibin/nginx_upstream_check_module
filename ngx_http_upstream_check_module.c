@@ -2965,13 +2965,12 @@ static void
 ngx_http_upstream_check_status_json_format(ngx_buf_t *b,
     ngx_http_upstream_check_peers_t *peers, ngx_uint_t flag)
 {
-    ngx_uint_t                       count, final, i, last;
+    ngx_uint_t                       count, i, last;
     ngx_http_upstream_check_peer_t  *peer;
 
     peer = peers->peers.elts;
 
     count = 0;
-    final = 0;
 
     for (i = 0; i < peers->peers.nelts; i++) {
 
@@ -2999,7 +2998,7 @@ ngx_http_upstream_check_status_json_format(ngx_buf_t *b,
             count,
             ngx_http_upstream_check_shm_generation);
 
-    last = peers->peers.nelts - 1;
+    last = 0;
     for (i = 0; i < peers->peers.nelts; i++) {
 
         if (flag & NGX_CHECK_STATUS_DOWN) {
@@ -3015,7 +3014,7 @@ ngx_http_upstream_check_status_json_format(ngx_buf_t *b,
             }
         }
         
-        final++;
+        last++;
         
         b->last = ngx_snprintf(b->last, b->end - b->last,
                 "    {\"index\": %ui, "
@@ -3035,7 +3034,7 @@ ngx_http_upstream_check_status_json_format(ngx_buf_t *b,
                 peer[i].shm->fall_count,
                 &peer[i].conf->check_type_conf->name,
                 peer[i].conf->port,
-                (final == count) ? "" : ",");
+                (last == count) ? "" : ",");
     }
 
     b->last = ngx_snprintf(b->last, b->end - b->last,
