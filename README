@@ -151,7 +151,7 @@ Directives
     enlarge it with this directive.
 
   check_status
-    syntax: *check_status [html|csv|json]*
+    syntax: *check_status [html|csv|json|prometheus]*
 
     default: *none*
 
@@ -161,7 +161,7 @@ Directives
     directive should be set in the http block.
 
     You can specify the default display format. The formats can be `html`,
-    `csv` or `json`. The default type is `html`. It also supports to specify
+    `csv`, `json` or `prometheus`. The default type is `html`. It also supports to specify
     the format by the request argument. Suppose your `check_status` location
     is '/status', the argument of `format` can change the display page's
     format. You can do like this:
@@ -169,6 +169,7 @@ Directives
         /status?format=html
         /status?format=csv
         /status?format=json
+        /status?format=prometheus
 
     At present, you can fetch the list of servers with the same status by
     the argument of `status`. For example:
@@ -213,6 +214,18 @@ Directives
            {"index": 0, "upstream": "backend", "name": "106.187.48.116:80", "status": "up", "rise": 58, "fall": 0, "type": "http", "port": 80}
           ]
          }}
+    
+    Below is the sample of prometheus page:
+
+        # TYPE nginx_http_upstream_check_total gauge
+        nginx_http_upstream_check_total 1
+        # TYPE nginx_http_upstream_check_total counter
+        nginx_http_upstream_check_generation 1
+        # TYPE nginx_http_upstream_check_peer_status gauge
+        # TYPE nginx_http_upstream_check_peer_probes counter
+        nginx_http_upstream_check_peer_status{index="0",upstream="backend",name="106.187.48.116:80",type="http",port="80"} 1
+        nginx_http_upstream_check_peer_probes{index="0",upstream="backend",name="106.187.48.116:80",type="http",port="80",count="rise"} 58
+        nginx_http_upstream_check_peer_probes{index="0",upstream="backend",name="106.187.48.116:80",type="http",port="80",count="fall"} 0
 
 Installation
     Download the latest version of the release tarball of this module from
