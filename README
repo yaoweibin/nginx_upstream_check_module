@@ -27,7 +27,7 @@ Synopsis
                 proxy_pass http://cluster;
             }
 
-            location /status {
+            location /hmstatus {
                 check_status;
 
                 access_log   off;
@@ -163,18 +163,18 @@ Directives
     You can specify the default display format. The formats can be `html`,
     `csv` or `json`. The default type is `html`. It also supports to specify
     the format by the request argument. Suppose your `check_status` location
-    is '/status', the argument of `format` can change the display page's
+    is '/hmstatus', the argument of `format` can change the display page's
     format. You can do like this:
 
-        /status?format=html
-        /status?format=csv
-        /status?format=json
+        /hmstatus?format=html
+        /hmstatus?format=csv
+        /hmstatus?format=json
 
     At present, you can fetch the list of servers with the same status by
     the argument of `status`. For example:
 
-        /status?format=html&status=down
-        /status?format=csv&status=up
+        /hmstatus?format=html&status=down
+        /hmstatus?format=csv&status=up
 
     Below it's the sample html page:
 
