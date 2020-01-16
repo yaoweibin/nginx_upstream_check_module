@@ -18,6 +18,7 @@ Synopsis
             #check interval=3000 rise=2 fall=5 timeout=1000 type=http;
             #check_http_send "HEAD / HTTP/1.0\r\n\r\n";
             #check_http_expect_alive http_2xx http_3xx;
+            #check_http_body "online";
         }
 
         server {
@@ -83,13 +84,16 @@ Directives
         3.  *http* sends a http request packet, receives and parses the http
             response to diagnose if the upstream server is alive.
 
-        4.  *mysql* connects to the mysql server, receives the greeting
+        4.  *https* sends a https (SSL) request packet, receives and parses the https
             response to diagnose if the upstream server is alive.
 
-        5.  *ajp* sends a AJP Cping packet, receives and parses the AJP
+        5.  *mysql* connects to the mysql server, receives the greeting
+            response to diagnose if the upstream server is alive.
+
+        6.  *ajp* sends a AJP Cping packet, receives and parses the AJP
             Cpong response to diagnose if the upstream server is alive.
 
-        6.  *fastcgi* send a fastcgi request, receives and parses the
+        7.  *fastcgi* send a fastcgi request, receives and parses the
             fastcgi response to diagnose if the upstream server is alive.
 
   check_http_send
@@ -112,6 +116,39 @@ Directives
 
     description: These status codes indicate the upstream server's http
     response is ok, the backend is alive.
+
+  check_http_body
+    syntax: *check_http_body body_substring*
+
+    default: *none*
+
+    context: *upstream*
+
+    description: If specified and check type is set to "http" - healthcheck will search for the
+    given substring in the response body and will fail if the substring is not found
+
+  check_ssl_server_name
+    syntax: *check_ssl_server_name server_name*
+
+    default: *none*
+
+    context: *upstream*
+
+    description: If specified and check type="http" and ssl=true - healthcheck will try to send the
+    configured server_name in SNI when making the SSL connection.
+    *NOTE*: for this to work - the OpenSSL library that Nginx is built against has to support
+    the SNI TLS extension (`SSL_set_tlsext_host_name()` function). If this function is not
+    supported - "check_ssl_server_name" parameter for healthchecks will not be available in the
+    built Nginx (you will get a configuration error if this directive is used).
+
+  check_ssl_protocols
+    syntax: *check_ssl_protocols protocols*
+
+    default: *SSLv2 SSLv3 TLSv1 TLSv1.1 TLSv1.2*
+
+    context: *upstream*
+
+    description: Configures allowed SSL protocols for https healthchecks
 
   check_keepalive_requests
     syntax: *check_keepalive_requests num*
