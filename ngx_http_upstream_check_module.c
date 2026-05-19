@@ -653,7 +653,7 @@ static ngx_check_conf_t  ngx_check_types[] = {
       NULL,
       NULL,
       0,
-      1 },
+      0 },
 
     { NGX_HTTP_CHECK_HTTP,
       ngx_string("http"),
@@ -1048,7 +1048,6 @@ ngx_http_upstream_check_begin_handler(ngx_event_t *event)
 
     /* This process is processing this peer now. */
     if ((peer->shm->owner == ngx_pid  ||
-        (peer->pc.connection != NULL) ||
         peer->check_timeout_ev.timer_set)) {
         return;
     }
