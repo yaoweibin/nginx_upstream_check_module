@@ -90,7 +90,18 @@ typedef struct {
 
     ngx_atomic_t                             down;
 
+    /*
+     * V2 zone+resolve: 1 when this slot is free in the resolve pool, 0 when
+     * it is assigned to a live resolved peer.  Only meaningful for pool slots
+     * (ngx_http_upstream_check_peer_t::is_resolve_pool != 0).
+     */
+    ngx_atomic_t                             available;
+
     u_char                                   padding[64];
+
+/* Maximum slots per resolve pool — guards against misconfigured directives
+ * exhausting the nginx pool at startup. */
+#define NGX_HTTP_UPSTREAM_CHECK_MAX_RESOLVE_ADDRS  64
 } ngx_http_upstream_check_peer_shm_t;
 
 
@@ -139,6 +150,11 @@ struct ngx_http_upstream_check_peer_s {
 
     ngx_http_upstream_check_peer_shm_t      *shm;
     ngx_http_upstream_check_srv_conf_t      *conf;
+
+    /* V2 zone+resolve pool fields */
+    ngx_flag_t                               is_resolve_pool;
+    ngx_uint_t                               resolve_pool_first; /* NGX_ERROR = I am the first */
+    ngx_uint_t                               resolve_pool_size;  /* valid only on first slot */
 };
 
 
@@ -239,6 +255,9 @@ struct ngx_http_upstream_check_srv_conf_s {
     ngx_array_t                             *fastcgi_params;
 
     ngx_uint_t                               default_down;
+
+    /* V2: max concurrent resolved IPs to track independently (0 forces V1 shared-slot mode) */
+    ngx_uint_t                               resolve_max_addrs;
 };
 
 
@@ -442,6 +461,9 @@ static char *ngx_http_upstream_check_fastcgi_params(ngx_conf_t *cf,
 static char *ngx_http_upstream_check_shm_size(ngx_conf_t *cf,
     ngx_command_t *cmd, void *conf);
 
+static char *ngx_http_upstream_check_resolve_max_addrs(ngx_conf_t *cf,
+    ngx_command_t *cmd, void *conf);
+
 static ngx_check_status_conf_t *ngx_http_get_check_status_format_conf(
     ngx_str_t *str);
 static char *ngx_http_upstream_check_status(ngx_conf_t *cf,
@@ -531,6 +553,13 @@ static ngx_command_t  ngx_http_upstream_check_commands[] = {
     { ngx_string("check_shm_size"),
       NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE1,
       ngx_http_upstream_check_shm_size,
+      0,
+      0,
+      NULL },
+
+    { ngx_string("check_resolve_max_addrs"),
+      NGX_HTTP_UPS_CONF|NGX_CONF_TAKE1,
+      ngx_http_upstream_check_resolve_max_addrs,
       0,
       0,
       NULL },
@@ -822,6 +851,277 @@ ngx_http_upstream_check_add_peer(ngx_conf_t *cf,
 }
 
 
+/*
+ * V2: pre-allocate resolve_max_addrs check slots for a "server <host> resolve"
+ * upstream.  Called from the host.len branch in ngx_http_upstream_init_round_robin
+ * (via check_1.30.0+.patch) instead of the plain add_peer call.
+ *
+ * Returns the index of the first (primary) slot, which is stored as
+ * check_index on the template peer in peers->resolve.  Returns NGX_ERROR when
+ * check is not configured for this upstream or allocation fails.
+ *
+ * When resolve_max_addrs == 0, falls back to V1 behaviour: a single
+ * shared slot, identical to calling add_peer directly.
+ */
+ngx_uint_t
+ngx_http_upstream_check_add_resolve_peer(ngx_conf_t *cf,
+    ngx_http_upstream_srv_conf_t *us, ngx_addr_t *peer_addr)
+{
+    ngx_uint_t                             i, first_index, idx, actual_n;
+    ngx_addr_t                            *ca;
+    ngx_http_upstream_check_peer_t        *peer;
+    ngx_http_upstream_check_peers_t       *peers;
+    ngx_http_upstream_check_srv_conf_t    *ucscf;
+    ngx_http_upstream_check_main_conf_t   *ucmcf;
+
+    if (us->srv_conf == NULL) {
+        return NGX_ERROR;
+    }
+
+    ucscf = ngx_http_conf_upstream_srv_conf(us, ngx_http_upstream_check_module);
+
+    if (ucscf->resolve_max_addrs == 0) {
+        /* resolve_max_addrs 0 forces V1: single shared slot */
+        return ngx_http_upstream_check_add_peer(cf, us, peer_addr);
+    }
+
+    ucmcf = ngx_http_conf_get_module_main_conf(cf,
+                                               ngx_http_upstream_check_module);
+    peers = ucmcf->peers;
+
+    /* Allocate the primary (template) slot */
+    first_index = ngx_http_upstream_check_add_peer(cf, us, peer_addr);
+    if (first_index == (ngx_uint_t) NGX_ERROR) {
+        return NGX_ERROR;
+    }
+
+    /*
+     * Ensure the primary slot's probe-address buffer can hold any sockaddr
+     * family, since the runtime resolver may return a different address family
+     * than the config-load-time resolution.
+     */
+    peer = peers->peers.elts;
+
+    if (peer[first_index].check_peer_addr == peer[first_index].peer_addr) {
+        ca = ngx_palloc(cf->pool, sizeof(ngx_addr_t));
+        if (ca == NULL) {
+            return NGX_ERROR;
+        }
+        ca->name = peer_addr->name;
+        ca->socklen = peer_addr->socklen;
+        ca->sockaddr = ngx_palloc(cf->pool, sizeof(struct sockaddr_storage));
+        if (ca->sockaddr == NULL) {
+            return NGX_ERROR;
+        }
+        ngx_memcpy(ca->sockaddr, peer_addr->sockaddr, peer_addr->socklen);
+        peer[first_index].check_peer_addr = ca;
+
+    } else {
+        void *new_sa = ngx_palloc(cf->pool, sizeof(struct sockaddr_storage));
+        if (new_sa == NULL) {
+            return NGX_ERROR;
+        }
+        ngx_memcpy(new_sa, peer[first_index].check_peer_addr->sockaddr,
+                   peer[first_index].check_peer_addr->socklen);
+        peer[first_index].check_peer_addr->sockaddr = new_sa;
+    }
+
+    peer[first_index].is_resolve_pool = 1;
+    peer[first_index].resolve_pool_first = (ngx_uint_t) NGX_ERROR;
+
+    /*
+     * Pre-allocate resolve_max_addrs - 1 additional pool slots.  These start
+     * with available=1 (set in init_shm_zone) — ready to be claimed at
+     * runtime by get_resolve_peer when the DNS resolver returns new IPs.
+     */
+    actual_n = 1;
+
+    for (i = 1; i < ucscf->resolve_max_addrs; i++) {
+        idx = ngx_http_upstream_check_add_peer(cf, us, peer_addr);
+        if (idx == (ngx_uint_t) NGX_ERROR) {
+            break;
+        }
+
+        /* peers->peers.elts may have been reallocated by array_push */
+        peer = peers->peers.elts;
+
+        ca = ngx_palloc(cf->pool, sizeof(ngx_addr_t));
+        if (ca == NULL) {
+            break;
+        }
+        ca->name = peer_addr->name;
+        ca->socklen = peer_addr->socklen;
+        ca->sockaddr = ngx_palloc(cf->pool, sizeof(struct sockaddr_storage));
+        if (ca->sockaddr == NULL) {
+            break;
+        }
+        ngx_memcpy(ca->sockaddr, peer_addr->sockaddr, peer_addr->socklen);
+        peer[idx].check_peer_addr = ca;
+
+        peer[idx].is_resolve_pool = 1;
+        peer[idx].resolve_pool_first = first_index;
+        actual_n++;
+    }
+
+    peer = peers->peers.elts;
+    peer[first_index].resolve_pool_size = actual_n;
+
+    ngx_log_debug3(NGX_LOG_DEBUG_HTTP, cf->log, 0,
+                   "check resolve pool alloc: upstream \"%V\" host \"%V\" "
+                   "%ui slot(s)",
+                   &us->host, &peer_addr->name, actual_n);
+
+    return first_index;
+}
+
+
+/*
+ * V2 runtime API: claim a free slot from the resolve pool rooted at
+ * first_index, update its probe address to the newly-resolved sa/socklen,
+ * arm the check timer, and return the slot index.
+ *
+ * Called from ngx_http_upstream_zone_copy_peer() (zone module patch) each
+ * time the DNS resolver creates a new concrete peer.
+ *
+ * When called with a non-pool first_index (V1 mode, resolve_max_addrs == 0),
+ * returns first_index directly so the caller does not need separate branches.
+ *
+ * Returns NGX_ERROR when the pool has no free slots.
+ */
+ngx_uint_t
+ngx_http_upstream_check_get_resolve_peer(ngx_uint_t first_index,
+    struct sockaddr *sa, socklen_t socklen, ngx_str_t *name)
+{
+    ngx_uint_t                             i, pool_size;
+    ngx_http_upstream_check_peer_t        *peer;
+    ngx_http_upstream_check_peer_shm_t    *peer_shm;
+    static ngx_str_t                       unknown = ngx_string("(unknown)");
+    ngx_str_t                             *safe_name;
+
+    safe_name = (name != NULL) ? name : &unknown;
+
+    if (check_peers_ctx == NULL
+        || first_index >= check_peers_ctx->peers.nelts)
+    {
+        return NGX_ERROR;
+    }
+
+    if (socklen > sizeof(struct sockaddr_storage)) {
+        ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
+                      "upstream check: socklen %uz exceeds sockaddr_storage "
+                      "for peer \"%V\", cannot claim slot",
+                      (size_t) socklen, safe_name);
+        return NGX_ERROR;
+    }
+
+    peer = check_peers_ctx->peers.elts;
+
+    if (!peer[first_index].is_resolve_pool) {
+        /*
+         * V1 fallback: this upstream was not configured with
+         * check_resolve_max_addrs, so add_peer (not add_resolve_peer) was
+         * called at config time.  Return the single shared slot directly so
+         * the caller does not need separate V1/V2 branches.
+         */
+        return first_index;
+    }
+
+    pool_size = peer[first_index].resolve_pool_size;
+
+    for (i = first_index; i < first_index + pool_size; i++) {
+        peer_shm = peer[i].shm;
+        if (peer_shm == NULL) {
+            continue;
+        }
+
+        if (!ngx_atomic_cmp_set(&peer_shm->available, 1, 0)) {
+            continue;
+        }
+
+        /* Slot claimed atomically.  Update the per-worker probe address. */
+        ngx_memcpy(peer[i].check_peer_addr->sockaddr, sa, socklen);
+        peer[i].check_peer_addr->socklen = socklen;
+        if (name) {
+            peer[i].check_peer_addr->name = *name;
+        }
+
+        /* Update the shm copy used for status display and find_shm_peer. */
+        ngx_shmtx_lock(&peer_shm->mutex);
+        ngx_memcpy(peer_shm->sockaddr, sa, socklen);
+        peer_shm->socklen = socklen;
+        peer_shm->fall_count = 0;
+        peer_shm->rise_count = 0;
+        peer_shm->down = peer[i].conf->default_down;
+        ngx_shmtx_unlock(&peer_shm->mutex);
+
+        /* Arm the check timer for this worker if not already running. */
+        if (!peer[i].check_ev.timer_set) {
+            ngx_add_timer(&peer[i].check_ev, 0);
+        }
+
+        ngx_log_debug3(NGX_LOG_DEBUG_HTTP, ngx_cycle->log, 0,
+                       "check resolve peer claim: slot %ui for \"%V\" "
+                       "(pool first=%ui)",
+                       i, safe_name, first_index);
+
+        return i;
+    }
+
+    ngx_log_error(NGX_LOG_WARN, ngx_cycle->log, 0,
+                  "check resolve pool exhausted (first=%ui size=%ui): "
+                  "peer \"%V\" has no independent health-check slot",
+                  first_index,
+                  peer[first_index].resolve_pool_size,
+                  safe_name);
+
+    return NGX_ERROR;
+}
+
+
+/*
+ * V2 runtime API: return a resolve pool slot to the free pool.
+ *
+ * Called from ngx_http_upstream_zone_remove_peer_locked() (zone module patch)
+ * when the DNS resolver removes a concrete peer (its IP is no longer present
+ * in the DNS answer).  For V1 non-pool peers this is a no-op.
+ */
+void
+ngx_http_upstream_check_put_resolve_peer(ngx_uint_t index)
+{
+    ngx_http_upstream_check_peer_t       *peer;
+    ngx_http_upstream_check_peer_shm_t   *peer_shm;
+
+    if (check_peers_ctx == NULL || index >= check_peers_ctx->peers.nelts) {
+        return;
+    }
+
+    peer = check_peers_ctx->peers.elts;
+    peer_shm = peer[index].shm;
+
+    if (peer_shm == NULL || !peer[index].is_resolve_pool) {
+        return;
+    }
+
+    /* Reset health counters before returning the slot to the pool. */
+    ngx_shmtx_lock(&peer_shm->mutex);
+    peer_shm->fall_count = 0;
+    peer_shm->rise_count = 0;
+    peer_shm->down = peer[index].conf->default_down;
+    ngx_shmtx_unlock(&peer_shm->mutex);
+
+    ngx_atomic_cmp_set(&peer_shm->available, 0, 1);
+
+    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, ngx_cycle->log, 0,
+                   "check resolve peer release: slot %ui \"%V\"",
+                   index, &peer[index].check_peer_addr->name);
+
+    /* Cancel the per-worker check timer. */
+    if (peer[index].check_ev.timer_set) {
+        ngx_del_timer(&peer[index].check_ev);
+    }
+}
+
+
 static ngx_int_t
 ngx_http_upstream_check_addr_change_port(ngx_pool_t *pool, ngx_addr_t *dst,
     ngx_addr_t *src, ngx_uint_t port)
@@ -1005,6 +1305,17 @@ ngx_http_upstream_check_add_timers(ngx_cycle_t *cycle)
         peer[i].reinit = cf->reinit;
 
         /*
+         * V2: non-primary resolve pool slots start in the free pool (available
+         * = 1).  Their check timers are armed by get_resolve_peer when a DNS
+         * resolver claims them.  Skip timer setup here.
+         */
+        if (peer[i].is_resolve_pool
+            && peer[i].resolve_pool_first != (ngx_uint_t) NGX_ERROR)
+        {
+            continue;
+        }
+
+        /*
          * We add a random start time here, since we don't want to trigger
          * the check events too close to each other at the beginning.
          */
@@ -1044,6 +1355,18 @@ ngx_http_upstream_check_begin_handler(ngx_event_t *event)
     peer = event->data;
     ucscf = peer->conf;
 
+    /* V2: free pool slot — timer fired spuriously, do not probe.
+     * Use an atomic acquire-load so that the available flag is observed
+     * with correct ordering on weak-memory-model CPUs (e.g. ARM). */
+    if (peer->is_resolve_pool
+        && ngx_atomic_fetch_add(&peer->shm->available, 0))
+    {
+        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, event->log, 0,
+                       "check resolve pool slot %ui is free, skipping probe",
+                       peer->index);
+        return;
+    }
+
     ngx_add_timer(event, ucscf->check_interval / 2);
 
     /* This process is processing this peer now. */
@@ -1051,7 +1374,7 @@ ngx_http_upstream_check_begin_handler(ngx_event_t *event)
         (peer->pc.connection != NULL) ||
         peer->check_timeout_ev.timer_set)) {
         return;
-    }
+    }    
 
     interval = ngx_current_msec - peer->shm->access_time;
     ngx_log_debug5(NGX_LOG_DEBUG_HTTP, event->log, 0,
@@ -1198,7 +1521,8 @@ ngx_http_upstream_check_peek_handler(ngx_event_t *event)
 
     if (ngx_http_upstream_check_peek_one_byte(c) == NGX_OK) {
         ngx_http_upstream_check_status_update(peer, 1);
-
+        // the TCP channel counts as one request if the connection is normal.
+        c->requests++;
     } else {
         c->error = 1;
         ngx_http_upstream_check_status_update(peer, 0);
@@ -2515,7 +2839,11 @@ ngx_http_upstream_check_status_update(ngx_http_upstream_check_peer_t *peer,
     ucscf = peer->conf;
 
     if (result) {
-        peer->shm->rise_count++;
+        if(peer->shm->rise_count < (ngx_uint_t)-1) {
+            peer->shm->rise_count++;
+        }else{
+            peer->shm->rise_count = ucscf->rise_count;
+        }
         peer->shm->fall_count = 0;
         if (peer->shm->down && peer->shm->rise_count >= ucscf->rise_count) {
             peer->shm->down = 0;
@@ -2525,7 +2853,11 @@ ngx_http_upstream_check_status_update(ngx_http_upstream_check_peer_t *peer,
         }
     } else {
         peer->shm->rise_count = 0;
-        peer->shm->fall_count++;
+        if(peer->shm->fall_count < (ngx_uint_t)-1) {
+            peer->shm->fall_count++;
+        }else{
+            peer->shm->fall_count = ucscf->fall_count;
+        }        
         if (!peer->shm->down && peer->shm->fall_count >= ucscf->fall_count) {
             peer->shm->down = 1;
             ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0,
@@ -3357,6 +3689,37 @@ ngx_http_upstream_check_shm_size(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 }
 
 
+static char *
+ngx_http_upstream_check_resolve_max_addrs(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf)
+{
+    ngx_str_t                           *value;
+    ngx_http_upstream_check_srv_conf_t  *ucscf;
+    ngx_uint_t                           n;
+
+    value = cf->args->elts;
+
+    ucscf = ngx_http_conf_get_module_srv_conf(cf,
+                                              ngx_http_upstream_check_module);
+
+    n = ngx_atoi(value[1].data, value[1].len);
+    if (n == (ngx_uint_t) NGX_ERROR) {
+        return "invalid value; must be a non-negative integer";
+    }
+
+    if (n > NGX_HTTP_UPSTREAM_CHECK_MAX_RESOLVE_ADDRS) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "check_resolve_max_addrs must not exceed %d",
+                           NGX_HTTP_UPSTREAM_CHECK_MAX_RESOLVE_ADDRS);
+        return NGX_CONF_ERROR;
+    }
+
+    ucscf->resolve_max_addrs = n;
+
+    return NGX_CONF_OK;
+}
+
+
 static ngx_check_status_conf_t *
 ngx_http_get_check_status_format_conf(ngx_str_t *str)
 {
@@ -3602,6 +3965,7 @@ ngx_http_upstream_check_create_srv_conf(ngx_conf_t *cf)
     ucscf->check_timeout = NGX_CONF_UNSET_MSEC;
     ucscf->check_keepalive_requests = NGX_CONF_UNSET_UINT;
     ucscf->check_type_conf = NGX_CONF_UNSET_PTR;
+    ucscf->resolve_max_addrs = NGX_CONF_UNSET_UINT;
 
     return ucscf;
 }
@@ -3660,6 +4024,10 @@ ngx_http_upstream_check_init_srv_conf(ngx_conf_t *cf, void *conf)
 
     if (ucscf->check_keepalive_requests == NGX_CONF_UNSET_UINT) {
         ucscf->check_keepalive_requests = 1;
+    }
+
+    if (ucscf->resolve_max_addrs == NGX_CONF_UNSET_UINT) {
+        ucscf->resolve_max_addrs = 4;
     }
 
     if (ucscf->check_type_conf == NGX_CONF_UNSET_PTR) {
@@ -3888,13 +4256,46 @@ ngx_http_upstream_check_init_shm_zone(ngx_shm_zone_t *shm_zone, void *data)
         }
 
         peer_shm->socklen = peer[i].peer_addr->socklen;
-        peer_shm->sockaddr = ngx_slab_alloc(shpool, peer_shm->socklen);
+
+        /*
+         * V2: resolve pool slots need a slab sockaddr large enough for any
+         * address family, because the probe address is updated at runtime by
+         * get_resolve_peer.  Non-pool peers use the exact size as before.
+         */
+        if (peer[i].is_resolve_pool) {
+            peer_shm->sockaddr = ngx_slab_alloc(shpool,
+                                                sizeof(struct sockaddr_storage));
+        } else {
+            peer_shm->sockaddr = ngx_slab_alloc(shpool, peer_shm->socklen);
+        }
+
         if (peer_shm->sockaddr == NULL) {
             goto failure;
         }
 
         ngx_memcpy(peer_shm->sockaddr, peer[i].peer_addr->sockaddr,
                    peer_shm->socklen);
+
+        /*
+         * V2: mark non-primary resolve pool slots as available (free).  The
+         * primary slot (resolve_pool_first == NGX_ERROR) starts in-use since
+         * it is immediately assigned to the template peer in peers->resolve.
+         */
+        if (peer[i].is_resolve_pool
+            && peer[i].resolve_pool_first != (ngx_uint_t) NGX_ERROR)
+        {
+            ngx_atomic_cmp_set(&peer_shm->available, 0, 1);
+
+            ucscf = peer[i].conf;
+            rc = ngx_http_upstream_check_init_shm_peer(peer_shm, NULL,
+                                                       ucscf->default_down, pool,
+                                                       &peer[i].peer_addr->name);
+            if (rc != NGX_OK) {
+                return NGX_ERROR;
+            }
+
+            continue;
+        }
 
         if (opeers_shm) {
 
@@ -4035,6 +4436,13 @@ ngx_http_upstream_check_init_shm_peer(ngx_http_upstream_check_peer_shm_t *psh,
     file = NULL;
 
 #else
+
+    if (name == NULL) {
+        ngx_log_error(NGX_LOG_EMERG, ngx_cycle->log, 0,
+                      "upstream check: NULL name in init_shm_peer "
+                      "on non-atomic platform");
+        return NGX_ERROR;
+    }
 
     file = ngx_pnalloc(pool, ngx_cycle->lock_file.len + name->len);
     if (file == NULL) {
