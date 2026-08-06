@@ -273,6 +273,7 @@ $ make install
 
 - **v0.1.5**: Compatible with Nginx `0.7.67+`
 - **v0.1.8**: Compatible with Nginx `1.0.14+`
+- **v0.4.2**: Compatible with OpenResty `1.29.2.3`
 
 Supports official upstream algorithms including **Round-Robin**, **Ip_hash**, and **least_conn**.
 
