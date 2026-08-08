@@ -1,13 +1,14 @@
-ngx_feature="ngx_http_upstream_check_module"
-ngx_feature_name=
+ngx_addon_name="ngx_http_upstream_check_module"
+ngx_module_name=$ngx_addon_name
+ngx_module_type=HTTP
 ngx_feature_run=no
-ngx_feature_incs=
+ngx_module_incs=
 ngx_feature_libs=""
 ngx_feature_path="$ngx_addon_dir"
 ngx_feature_deps="$ngx_addon_dir/ngx_http_upstream_check_module.h"
 ngx_check_src="$ngx_addon_dir/ngx_http_upstream_check_module.c"
 ngx_feature_test="int a;"
-. auto/feature
+. auto/module
 
 if [ $ngx_found = yes ]; then
     have=NGX_HTTP_UPSTREAM_CHECK . auto/have
