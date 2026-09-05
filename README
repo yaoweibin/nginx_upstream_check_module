@@ -1,6 +1,7 @@
 Name
     nginx_http_upstream_check_module - support upstream health check with
     Nginx
+    
 
 Synopsis
     http {
@@ -248,6 +249,14 @@ Note
 
     If you use nginx-1.7.2+, You should use the patch named
     'check_1.7.2+.patch'.
+
+    If you use nginx-1.20.1+, You should use the patch named
+    'check_1.20.1+.patch'.
+
+    If you use nginx-1.30.4+ (the current stable branch, which merged the
+    upstream sticky 'sid' code and added per-peer locking into the round
+    robin / hash / ip_hash modules), You should use the patch named
+    'check_1.30.4+.patch'.
 
     The patch just adds the support for the official Round-Robin, Ip_hash
     and least_conn upstream module. But it's easy to expand my module to
