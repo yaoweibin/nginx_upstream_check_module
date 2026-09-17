@@ -421,6 +421,8 @@ static void ngx_http_upstream_check_status_csv_format(ngx_buf_t *b,
     ngx_http_upstream_check_peers_t *peers, ngx_uint_t flag);
 static void ngx_http_upstream_check_status_json_format(ngx_buf_t *b,
     ngx_http_upstream_check_peers_t *peers, ngx_uint_t flag);
+static void ngx_http_upstream_check_status_prometheus_format(ngx_buf_t *b,
+    ngx_http_upstream_check_peers_t *peers, ngx_uint_t flag);
 
 static ngx_int_t ngx_http_upstream_check_addr_change_port(ngx_pool_t *pool,
     ngx_addr_t *dst, ngx_addr_t *src, ngx_uint_t port);
@@ -742,6 +744,10 @@ static ngx_check_status_conf_t  ngx_check_status_formats[] = {
     { ngx_string("json"),
       ngx_string("application/json"), /* RFC 4627 */
       ngx_http_upstream_check_status_json_format },
+
+    { ngx_string("prometheus"),
+      ngx_string("text/plain"),
+      ngx_http_upstream_check_status_prometheus_format },
 
     { ngx_null_string, ngx_null_string, NULL }
 };
@@ -3040,6 +3046,113 @@ ngx_http_upstream_check_status_json_format(ngx_buf_t *b,
 
     b->last = ngx_snprintf(b->last, b->end - b->last,
             "}}\n");
+}
+
+
+static void
+ngx_http_upstream_check_status_prometheus_format(ngx_buf_t *b,
+    ngx_http_upstream_check_peers_t *peers, ngx_uint_t flag)
+{
+    ngx_uint_t                       count, i;
+    ngx_http_upstream_check_peer_t  *peer;
+
+    peer = peers->peers.elts;
+
+    count = 0;
+
+    for (i = 0; i < peers->peers.nelts; i++) {
+
+        if (flag & NGX_CHECK_STATUS_DOWN) {
+
+            if (!peer[i].shm->down) {
+                continue;
+            }
+
+        } else if (flag & NGX_CHECK_STATUS_UP) {
+
+            if (peer[i].shm->down) {
+                continue;
+            }
+        }
+
+        count++;
+    }
+
+    b->last = ngx_snprintf(b->last, b->end - b->last,
+            "# TYPE nginx_http_upstream_check_total gauge\n"
+            "nginx_http_upstream_check_total %ui\n"
+            "# TYPE nginx_http_upstream_check_total counter\n"
+            "nginx_http_upstream_check_generation %ui\n",
+            count,
+            ngx_http_upstream_check_shm_generation);
+    b->last = ngx_snprintf(b->last, b->end - b->last,
+            "# TYPE nginx_http_upstream_check_peer_status gauge\n"
+            "# TYPE nginx_http_upstream_check_peer_probes counter\n"
+    );
+
+    for (i = 0; i < peers->peers.nelts; i++) {
+
+        if (flag & NGX_CHECK_STATUS_DOWN) {
+
+            if (!peer[i].shm->down) {
+                continue;
+            }
+
+        } else if (flag & NGX_CHECK_STATUS_UP) {
+
+            if (peer[i].shm->down) {
+                continue;
+            }
+        }
+
+        b->last = ngx_snprintf(b->last, b->end - b->last,
+                "nginx_http_upstream_check_peer_status{"
+                "index=\"%ui\","
+                "upstream=\"%V\","
+                "name=\"%v\","
+                "type=\"%V\","
+                "port=\"%ui\"} "
+                "%ui\n",
+                i,
+                peer[i].upstream_name,
+                &peer[i].peer_addr->name,
+                &peer[i].conf->check_type_conf->name,
+                peer[i].conf->port,
+                peer[i].shm->down ? 0 : 1
+                );
+        b->last = ngx_snprintf(b->last, b->end - b->last,
+                "nginx_http_upstream_check_peer_probes{"
+                "index=\"%ui\","
+                "upstream=\"%V\","
+                "name=\"%v\","
+                "type=\"%V\","
+                "port=\"%ui\","
+                "count=\"rise\"} "
+                "%ui\n",
+                i,
+                peer[i].upstream_name,
+                &peer[i].peer_addr->name,
+                &peer[i].conf->check_type_conf->name,
+                peer[i].conf->port,
+                peer[i].shm->rise_count
+                );
+        b->last = ngx_snprintf(b->last, b->end - b->last,
+                "nginx_http_upstream_check_peer_probes{"
+                "index=\"%ui\","
+                "upstream=\"%V\","
+                "name=\"%v\","
+                "type=\"%V\","
+                "port=\"%ui\","
+                "count=\"fall\"} "
+                "%ui\n",
+                i,
+                peer[i].upstream_name,
+                &peer[i].peer_addr->name,
+                &peer[i].conf->check_type_conf->name,
+                peer[i].conf->port,
+                peer[i].shm->fall_count
+                );
+    }
 }
 
 
