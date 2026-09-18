@@ -77,6 +77,8 @@ typedef struct {
 
     ngx_pid_t                                owner;
 
+    ngx_str_t                               *upstream_name;
+
     ngx_msec_t                               access_time;
 
     ngx_uint_t                               fall_count;
@@ -90,7 +92,7 @@ typedef struct {
 
     ngx_atomic_t                             down;
 
-    u_char                                   padding[64];
+    u_char                                   padding[56];
 } ngx_http_upstream_check_peer_shm_t;
 
 
@@ -128,6 +130,7 @@ struct ngx_http_upstream_check_peer_s {
     ngx_event_t                              check_ev;
     ngx_event_t                              check_timeout_ev;
     ngx_peer_connection_t                    pc;
+    ngx_ssl_t                                ssl;
 
     void                                    *check_data;
     ngx_event_handler_pt                     send_handler;
@@ -221,6 +224,7 @@ typedef struct {
 
 
 struct ngx_http_upstream_check_srv_conf_s {
+    ngx_http_upstream_srv_conf_t            *upstream_srv_conf;
     ngx_uint_t                               port;
     ngx_uint_t                               fall_count;
     ngx_uint_t                               rise_count;
@@ -236,9 +240,17 @@ struct ngx_http_upstream_check_srv_conf_s {
         ngx_uint_t                           status_alive;
     } code;
 
+    ngx_str_t                                body;
+
     ngx_array_t                             *fastcgi_params;
 
     ngx_uint_t                               default_down;
+    ngx_uint_t                               ssl;
+    ngx_uint_t                               ssl_protocols;
+
+#ifdef SSL_CTRL_SET_TLSEXT_HOSTNAME
+    ngx_str_t                                ssl_server_name;
+#endif
 };
 
 
@@ -309,6 +321,17 @@ typedef enum {
     ngx_http_fastcgi_st_padding
 } ngx_http_fastcgi_state_e;
 
+static ngx_conf_bitmask_t  ngx_http_check_ssl_protocols[] = {
+    { ngx_string("SSLv2"), NGX_SSL_SSLv2 },
+    { ngx_string("SSLv3"), NGX_SSL_SSLv3 },
+    { ngx_string("TLSv1"), NGX_SSL_TLSv1 },
+    { ngx_string("TLSv1.1"), NGX_SSL_TLSv1_1 },
+    { ngx_string("TLSv1.2"), NGX_SSL_TLSv1_2 },
+#ifdef NGX_SSL_TLSv1_3
+    { ngx_string("TLSv1.3"), NGX_SSL_TLSv1_3 },
+#endif
+    { ngx_null_string, 0 }
+};
 
 static ngx_http_fastcgi_request_start_t  ngx_http_fastcgi_request_start = {
     { 1,                                               /* version */
@@ -339,6 +362,15 @@ static ngx_int_t ngx_http_upstream_check_peek_one_byte(ngx_connection_t *c);
 
 static void ngx_http_upstream_check_begin_handler(ngx_event_t *event);
 static void ngx_http_upstream_check_connect_handler(ngx_event_t *event);
+static void ngx_http_upstream_check_connect_done(
+    ngx_http_upstream_check_peer_t *peer,
+    ngx_http_upstream_check_srv_conf_t *ucscf, ngx_connection_t *c,
+    ngx_int_t ok);
+
+static void ngx_http_upstream_check_ssl_init(
+    ngx_http_upstream_check_peer_t *peer,
+    ngx_http_upstream_check_srv_conf_t *ucscf, ngx_connection_t *c);
+static void ngx_http_upstream_check_ssl_handshake(ngx_connection_t *c);
 
 static void ngx_http_upstream_check_peek_handler(ngx_event_t *event);
 
@@ -435,8 +467,16 @@ static char *ngx_http_upstream_check_http_send(ngx_conf_t *cf,
     ngx_command_t *cmd, void *conf);
 static char *ngx_http_upstream_check_http_expect_alive(ngx_conf_t *cf,
     ngx_command_t *cmd, void *conf);
+static char *ngx_http_upstream_check_http_body(ngx_conf_t *cf,
+    ngx_command_t *cmd, void *conf);
 
 static char *ngx_http_upstream_check_fastcgi_params(ngx_conf_t *cf,
+    ngx_command_t *cmd, void *conf);
+
+static char *ngx_http_upstream_check_ssl_protocols(ngx_conf_t *cf,
+    ngx_command_t *cmd, void *conf);
+
+static char *ngx_http_upstream_check_ssl_server_name(ngx_conf_t *cf,
     ngx_command_t *cmd, void *conf);
 
 static char *ngx_http_upstream_check_shm_size(ngx_conf_t *cf,
@@ -467,7 +507,8 @@ static ngx_int_t ngx_http_upstream_check_get_shm_name(ngx_str_t *shm_name,
 static ngx_shm_zone_t *ngx_shared_memory_find(ngx_cycle_t *cycle,
     ngx_str_t *name, void *tag);
 static ngx_http_upstream_check_peer_shm_t *
-ngx_http_upstream_check_find_shm_peer(ngx_http_upstream_check_peers_shm_t *peers_shm,
+ngx_http_upstream_check_find_shm_peer(
+    ngx_http_upstream_check_peers_shm_t *peers_shm, ngx_str_t *us_name,
     ngx_addr_t *addr);
 
 static ngx_int_t ngx_http_upstream_check_init_shm_peer(
@@ -514,9 +555,30 @@ static ngx_command_t  ngx_http_upstream_check_commands[] = {
       0,
       NULL },
 
+    { ngx_string("check_ssl_protocols"),
+      NGX_HTTP_UPS_CONF|NGX_CONF_1MORE,
+      ngx_http_upstream_check_ssl_protocols,
+      0,
+      0,
+      NULL },
+
+    { ngx_string("check_ssl_server_name"),
+      NGX_HTTP_UPS_CONF|NGX_CONF_TAKE1,
+      ngx_http_upstream_check_ssl_server_name,
+      0,
+      0,
+      NULL },
+
     { ngx_string("check_http_expect_alive"),
       NGX_HTTP_UPS_CONF|NGX_CONF_1MORE,
       ngx_http_upstream_check_http_expect_alive,
+      0,
+      0,
+      NULL },
+
+    { ngx_string("check_http_body"),
+      NGX_HTTP_UPS_CONF|NGX_CONF_TAKE1,
+      ngx_http_upstream_check_http_body,
       0,
       0,
       NULL },
@@ -1112,7 +1174,8 @@ ngx_http_upstream_check_connect_handler(ngx_event_t *event)
     if (peer->pc.connection != NULL) {
         c = peer->pc.connection;
         if ((rc = ngx_http_upstream_check_peek_one_byte(c)) == NGX_OK) {
-            goto upstream_check_connect_done;
+            ngx_http_upstream_check_connect_done(peer, ucscf, c, 1);
+            return;
         } else {
             ngx_close_connection(c);
             peer->pc.connection = NULL;
@@ -1148,7 +1211,19 @@ ngx_http_upstream_check_connect_handler(ngx_event_t *event)
     c->write->log = c->log;
     c->pool = peer->pool;
 
-upstream_check_connect_done:
+    if (ucscf->ssl) {
+        ngx_http_upstream_check_ssl_init(peer, ucscf, c);
+        return;
+    }
+
+    ngx_http_upstream_check_connect_done(peer, ucscf, c, rc == NGX_OK);
+}
+
+static void
+ngx_http_upstream_check_connect_done(ngx_http_upstream_check_peer_t *peer,
+    ngx_http_upstream_check_srv_conf_t *ucscf, ngx_connection_t *c,
+    ngx_int_t ok)
+{
     peer->state = NGX_HTTP_CHECK_CONNECT_DONE;
 
     c->write->handler = peer->send_handler;
@@ -1157,9 +1232,81 @@ upstream_check_connect_done:
     ngx_add_timer(&peer->check_timeout_ev, ucscf->check_timeout);
 
     /* The kqueue's loop interface needs it. */
-    if (rc == NGX_OK) {
+    if (ok) {
         c->write->handler(c->write);
     }
+}
+
+static void
+ngx_http_upstream_check_ssl_init(ngx_http_upstream_check_peer_t *peer,
+    ngx_http_upstream_check_srv_conf_t *ucscf, ngx_connection_t *c)
+{
+    ngx_int_t  rc;
+    ngx_uint_t flags;
+
+    ngx_memzero(&peer->ssl, sizeof(ngx_ssl_t));
+
+    flags = NGX_SSL_BUFFER|NGX_SSL_CLIENT;
+    if (ngx_ssl_create(&peer->ssl, ucscf->ssl_protocols, NULL) != NGX_OK ||
+        ngx_ssl_create_connection(&peer->ssl, c, flags) != NGX_OK) {
+        goto failed;
+    }
+
+#ifdef SSL_CTRL_SET_TLSEXT_HOSTNAME
+    if (ucscf->ssl_server_name.len != 0) {
+        ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0,
+            "http check - using ssl server name: \"%*s\"",
+            ucscf->ssl_server_name.len, ucscf->ssl_server_name.data);
+        if (SSL_set_tlsext_host_name(c->ssl->connection, ucscf->ssl_server_name.data) == 0) {
+            goto failed;
+        }
+    }
+#endif
+
+    rc = ngx_ssl_handshake(c);
+    if (rc == NGX_ERROR) {
+        goto failed;
+    }
+
+    if (rc == NGX_AGAIN) {
+        ngx_add_timer(c->read, ucscf->check_timeout);
+        c->ssl->handler = ngx_http_upstream_check_ssl_handshake;
+        return;
+    }
+
+    ngx_http_upstream_check_ssl_handshake(c);
+    return;
+
+failed:
+    // Connection needs to be set to failed
+    // SSL handshake fail doesn't mean as failed connection, but in the healthcheck case it does
+    c->error = 1;
+    ngx_http_upstream_check_status_update(peer, 0);
+    ngx_http_upstream_check_clean_event(peer);
+}
+
+static void
+ngx_http_upstream_check_ssl_handshake(ngx_connection_t *c)
+{
+    ngx_http_upstream_check_peer_t      *peer;
+    ngx_http_upstream_check_srv_conf_t  *ucscf;
+
+    peer = (ngx_http_upstream_check_peer_t *) c->data;
+    ucscf = peer->conf;
+
+    if (c->read->timer_set)
+        ngx_del_timer(c->read);
+
+    if (!c->ssl->handshaked) {
+        // Connection needs to be set to failed
+        // SSL handshake fail doesn't mean as failed connection, but in the healthcheck case it does
+        c->error = 1;
+        ngx_http_upstream_check_status_update(peer, 0);
+        ngx_http_upstream_check_clean_event(peer);
+        return;
+    }
+
+    ngx_http_upstream_check_connect_done(peer, ucscf, c, 1);
 }
 
 static ngx_int_t
@@ -1563,7 +1710,8 @@ ngx_http_upstream_check_http_parse(ngx_http_upstream_check_peer_t *peer)
                        "http_parse: code_n: %ui, conf: %ui",
                        code_n, ucscf->code.status_alive);
 
-        if (code_n & ucscf->code.status_alive) {
+        if (code_n & ucscf->code.status_alive && (ucscf->body.len == 0 ||
+            ngx_strstr(ctx->recv.pos, ucscf->body.data) != NULL)) {
             return NGX_OK;
         } else {
             return NGX_ERROR;
@@ -2560,6 +2708,13 @@ ngx_http_upstream_check_clean_event(ngx_http_upstream_check_peer_t *peer)
             c->write->handler = ngx_http_upstream_check_dummy_handler;
             c->read->handler = ngx_http_upstream_check_discard_handler;
         } else {
+            if (c->ssl) {
+                c->ssl->no_wait_shutdown = 1;
+                c->ssl->no_send_shutdown = 1;
+                ngx_ssl_shutdown(c);
+
+                ngx_ssl_cleanup_ctx(&peer->ssl);
+            }
             ngx_close_connection(c);
             peer->pc.connection = NULL;
         }
@@ -3073,7 +3228,7 @@ static char *
 ngx_http_upstream_check(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
     ngx_str_t                           *value, s;
-    ngx_uint_t                           i, port, rise, fall, default_down;
+    ngx_uint_t                           i, port, rise, fall, default_down, ssl;
     ngx_msec_t                           interval, timeout;
     ngx_http_upstream_check_srv_conf_t  *ucscf;
 
@@ -3084,6 +3239,7 @@ ngx_http_upstream_check(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     interval = 30000;
     timeout = 1000;
     default_down = 1;
+    ssl = 0;
 
     value = cf->args->elts;
 
@@ -3187,6 +3343,25 @@ ngx_http_upstream_check(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             continue;
         }
 
+        if (ngx_strncmp(value[i].data, "ssl=", 4) == 0) {
+            s.len = value[i].len - 4;
+            s.data = value[i].data + 4;
+
+            if (ngx_strcasecmp(s.data, (u_char *) "true") == 0) {
+                ssl = 1;
+            } else if (ngx_strcasecmp(s.data, (u_char *) "false") == 0) {
+                ssl = 0;
+            } else {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "invalid value \"%s\", "
+                                   "it must be \"true\" or \"false\"",
+                                   value[i].data);
+                return NGX_CONF_ERROR;
+            }
+
+            continue;
+        }
+
         goto invalid_check_parameter;
     }
 
@@ -3196,6 +3371,14 @@ ngx_http_upstream_check(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ucscf->fall_count = fall;
     ucscf->rise_count = rise;
     ucscf->default_down = default_down;
+    ucscf->ssl = ssl;
+
+    // The default ssl protocols
+#ifdef NGX_SSL_TLSv1_3
+    ucscf->ssl_protocols = NGX_SSL_SSLv2|NGX_SSL_SSLv3|NGX_SSL_TLSv1|NGX_SSL_TLSv1_1|NGX_SSL_TLSv1_2|NGX_SSL_TLSv1_3;
+#else
+    ucscf->ssl_protocols = NGX_SSL_SSLv2|NGX_SSL_SSLv3|NGX_SSL_TLSv1|NGX_SSL_TLSv1_1|NGX_SSL_TLSv1_2;
+#endif
 
     if (ucscf->check_type_conf == NGX_CONF_UNSET_PTR) {
         ngx_str_set(&s, "tcp");
@@ -3256,6 +3439,24 @@ ngx_http_upstream_check_http_send(ngx_conf_t *cf, ngx_command_t *cmd,
 
 
 static char *
+ngx_http_upstream_check_http_body(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf)
+{
+    ngx_str_t                           *value;
+    ngx_http_upstream_check_srv_conf_t  *ucscf;
+
+    value = cf->args->elts;
+
+    ucscf = ngx_http_conf_get_module_srv_conf(cf,
+                                              ngx_http_upstream_check_module);
+
+    ucscf->body = value[1];
+
+    return NGX_CONF_OK;
+}
+
+
+static char *
 ngx_http_upstream_check_fastcgi_params(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf)
 {
@@ -3283,6 +3484,63 @@ ngx_http_upstream_check_fastcgi_params(ngx_conf_t *cf, ngx_command_t *cmd,
     return NGX_CONF_OK;
 }
 
+static char *
+ngx_http_upstream_check_ssl_protocols(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf)
+{
+    ngx_http_upstream_check_srv_conf_t  *ucscf;
+    ngx_uint_t          np, i, m;
+    ngx_str_t           *value;
+    ngx_conf_bitmask_t  *mask;
+
+    ucscf = ngx_http_conf_get_module_srv_conf(cf, ngx_http_upstream_check_module);
+    value = cf->args->elts;
+    mask = ngx_http_check_ssl_protocols;
+
+    // We are overwriting the default values, not only turning the specified protocol on.
+    np = 0;
+    for (i = 1; i < cf->args->nelts; i++) {
+        for (m = 0; mask[m].name.len != 0; m++) {
+            if (mask[m].name.len != value[i].len
+                || ngx_strcasecmp(mask[m].name.data, value[i].data) != 0)
+            {
+                continue;
+            }
+            np |= mask[m].mask;
+            break;
+        }
+        if (mask[m].name.len == 0) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "invalid value \"%s\"", value[i].data);
+            return NGX_CONF_ERROR;
+        }
+    }
+    ucscf->ssl_protocols = np;
+
+    return NGX_CONF_OK;
+}
+
+static char *
+ngx_http_upstream_check_ssl_server_name(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf)
+{
+#ifdef SSL_CTRL_SET_TLSEXT_HOSTNAME
+    ngx_str_t                           *value;
+    ngx_http_upstream_check_srv_conf_t  *ucscf;
+
+    value = cf->args->elts;
+
+    ucscf = ngx_http_conf_get_module_srv_conf(cf, ngx_http_upstream_check_module);
+
+    ucscf->ssl_server_name = value[1];
+
+    return NGX_CONF_OK;
+#else
+    ngx_log_error(NGX_LOG_ERR, c->log, 0,
+        "http check - check_ssl_server_name (SNI) disabled because the OpenSSL version that Nginx"
+        " was built against does not support it (SSL_set_tlsext_host_name)");
+    return NGX_CONF_ERROR;
+#endif
+}
 
 static char *
 ngx_http_upstream_check_http_expect_alive(ngx_conf_t *cf, ngx_command_t *cmd,
@@ -3596,6 +3854,7 @@ ngx_http_upstream_check_create_srv_conf(ngx_conf_t *cf)
         return NULL;
     }
 
+    ucscf->upstream_srv_conf = NGX_CONF_UNSET_PTR;
     ucscf->port = NGX_CONF_UNSET_UINT;
     ucscf->fall_count = NGX_CONF_UNSET_UINT;
     ucscf->rise_count = NGX_CONF_UNSET_UINT;
@@ -3637,6 +3896,10 @@ ngx_http_upstream_check_init_srv_conf(ngx_conf_t *cf, void *conf)
     }
 
     ucscf = ngx_http_conf_upstream_srv_conf(us, ngx_http_upstream_check_module);
+
+    if (ucscf->upstream_srv_conf == NGX_CONF_UNSET_PTR) {
+        ucscf->upstream_srv_conf = us;
+    }
 
     if (ucscf->port == NGX_CONF_UNSET_UINT) {
         ucscf->port = 0;
@@ -3896,10 +4159,14 @@ ngx_http_upstream_check_init_shm_zone(ngx_shm_zone_t *shm_zone, void *data)
         ngx_memcpy(peer_shm->sockaddr, peer[i].peer_addr->sockaddr,
                    peer_shm->socklen);
 
+        ucscf = peer[i].conf;
+
+        peer_shm->upstream_name = &ucscf->upstream_srv_conf->host;
+
         if (opeers_shm) {
 
-            opeer_shm = ngx_http_upstream_check_find_shm_peer(opeers_shm,
-                                                              peer[i].peer_addr);
+            opeer_shm = ngx_http_upstream_check_find_shm_peer(
+                opeers_shm, peer[i].upstream_name, peer[i].peer_addr);
             if (opeer_shm) {
                 ngx_log_debug1(NGX_LOG_DEBUG_HTTP, shm_zone->shm.log, 0,
                                "http upstream check, inherit opeer: %V ",
@@ -3915,7 +4182,6 @@ ngx_http_upstream_check_init_shm_zone(ngx_shm_zone_t *shm_zone, void *data)
             }
         }
 
-        ucscf = peer[i].conf;
         rc = ngx_http_upstream_check_init_shm_peer(peer_shm, NULL,
                                                    ucscf->default_down, pool,
                                                    &peer[i].peer_addr->name);
@@ -3980,14 +4246,22 @@ ngx_shared_memory_find(ngx_cycle_t *cycle, ngx_str_t *name, void *tag)
 
 static ngx_http_upstream_check_peer_shm_t *
 ngx_http_upstream_check_find_shm_peer(ngx_http_upstream_check_peers_shm_t *p,
-    ngx_addr_t *addr)
+    ngx_str_t *us_name, ngx_addr_t *addr)
 {
     ngx_uint_t                          i;
     ngx_http_upstream_check_peer_shm_t *peer_shm;
+    ngx_str_t                          *shm_us_name;
+
 
     for (i = 0; i < p->number; i++) {
 
         peer_shm = &p->peers[i];
+        shm_us_name = peer_shm->upstream_name;
+
+        if (us_name->len != shm_us_name->len ||
+                ngx_strncmp(us_name, shm_us_name, us_name->len) != 0) {
+           continue;
+        }
 
         if (addr->socklen != peer_shm->socklen) {
             continue;
