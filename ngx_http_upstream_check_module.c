@@ -2111,6 +2111,8 @@ ngx_http_upstream_check_parse_status_line(ngx_http_upstream_check_ctx_t *ctx,
         sw_status,
         sw_space_after_status,
         sw_status_text,
+        sw_lf,
+        sw_cr,
         sw_almost_done
     } state;
 
@@ -2248,20 +2250,43 @@ ngx_http_upstream_check_parse_status_line(ngx_http_upstream_check_ctx_t *ctx,
         case sw_status_text:
             switch (ch) {
             case CR:
-                state = sw_almost_done;
-
+                state = sw_lf;
                 break;
             case LF:
                 goto done;
             }
             break;
 
-        /* end of status line */
+        /* LF */
+        case sw_lf:
+            switch (ch) {
+            case LF:
+                state = sw_cr;
+                break;
+            default:
+                return NGX_ERROR;
+            }
+            break;
+
+        /* CR */
+        case sw_cr:
+            switch (ch) {
+            case CR:
+                state = sw_almost_done;
+                break;
+            default:
+                state = sw_status_text;
+                break;
+            }
+            break;
+
+        /* LF */
         case sw_almost_done:
-            status->end = p - 1;
-            if (ch == LF) {
+            switch (ch) {
+            case LF:
+                status->end = p - 1;
                 goto done;
-            } else {
+            default:
                 return NGX_ERROR;
             }
         }
