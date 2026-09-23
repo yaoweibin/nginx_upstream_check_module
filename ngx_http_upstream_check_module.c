@@ -6,6 +6,7 @@
 
 #include <nginx.h>
 #include "ngx_http_upstream_check_module.h"
+//#define DETAILED_JSON_OUT
 
 
 typedef struct ngx_http_upstream_check_peer_s ngx_http_upstream_check_peer_t;
@@ -761,6 +762,7 @@ static ngx_check_status_command_t ngx_check_status_commands[] =  {
 
 static ngx_uint_t ngx_http_upstream_check_shm_generation = 0;
 static ngx_http_upstream_check_peers_t *check_peers_ctx = NULL;
+static ngx_http_upstream_main_conf_t *upstream_main_conf = NULL;
 
 
 ngx_uint_t
@@ -2826,6 +2828,88 @@ ngx_http_upstream_check_status_command_status(
     return NGX_OK;
 }
 
+static ngx_http_upstream_srv_conf_t*
+findUpstream(ngx_str_t *upstream_name) {
+  for (unsigned int i = 0; i < upstream_main_conf->upstreams.nelts; i++){
+    ngx_http_upstream_srv_conf_t **upstream  =
+                  (((ngx_http_upstream_srv_conf_t **)upstream_main_conf->upstreams.elts) + i);
+    if (strcmp((const char *)(*upstream)->host.data,
+               (const char*)upstream_name->data) == 0 ) {
+      return *upstream;
+    }
+  }
+  return NULL;
+}
+
+ngx_str_t *
+findHostname(ngx_http_upstream_srv_conf_t* upstream, ngx_addr_t* address) {
+  for (unsigned int i = 0; i < upstream->servers->nelts; i++){
+    ngx_http_upstream_server_t *srv =
+                  (((ngx_http_upstream_server_t *)upstream->servers->elts) + i);
+    for (unsigned int addr_i = 0; addr_i  < srv->naddrs; addr_i++) {
+      ngx_addr_t * addr = srv->addrs + addr_i;
+      if (address == addr) {
+        return &(srv)->name;
+      }
+    }
+  }
+  return NULL;
+}
+
+typedef struct {
+    ngx_rbtree_t              tree;
+    ngx_rbtree_node_t         sentinel;
+} hosts_health_rbtree;
+
+hosts_health_rbtree*
+collectPeersStatusByHost(ngx_http_upstream_check_peers_t * peers,
+                  ngx_uint_t flag){
+    ngx_http_upstream_check_peer_t *peer;
+
+    peer = peers->peers.elts;
+
+    hosts_health_rbtree *health_status_tree = malloc(sizeof(hosts_health_rbtree));
+    ngx_rbtree_init(&health_status_tree->tree, &health_status_tree->sentinel,
+                        ngx_str_rbtree_insert_value);
+
+    for (ngx_uint_t i = 0; i < peers->peers.nelts; i++) {
+
+        if (flag & NGX_CHECK_STATUS_DOWN) {
+
+            if (!peer[i].shm->down) {
+                continue;
+            }
+
+        } else if (flag & NGX_CHECK_STATUS_UP) {
+
+            if (peer[i].shm->down) {
+                continue;
+            }
+        }
+        ngx_str_node_t   *sn;
+        uint32_t          hash;
+
+        ngx_http_upstream_srv_conf_t* up = findUpstream(peer[i].upstream_name);
+        ngx_str_t *hst = findHostname(up, peer[i].peer_addr);
+        hash = ngx_crc32_long(hst->data, hst->len);
+
+        sn = ngx_str_rbtree_lookup(&health_status_tree->tree, hst, hash);
+        if (sn){
+          if (!sn->node.data /* peer is up*/ && peer[i].shm->down ) {
+            sn->node.data = 1; // Set peer is down
+          }
+          continue;
+        }
+        else {
+          sn = calloc(1, sizeof(ngx_str_node_t));
+          sn->node.key = hash;
+          sn->node.data = peer[i].shm->down;
+          sn->str = *hst;
+          ngx_rbtree_insert(&health_status_tree->tree, &sn->node);
+        }
+    }
+    return health_status_tree;
+}
 
 static void
 ngx_http_upstream_check_status_html_format(ngx_buf_t *b,
@@ -2873,49 +2957,41 @@ ngx_http_upstream_check_status_html_format(ngx_buf_t *b,
             "    <th>Upstream</th>\n"
             "    <th>Name</th>\n"
             "    <th>Status</th>\n"
-            "    <th>Rise counts</th>\n"
-            "    <th>Fall counts</th>\n"
-            "    <th>Check type</th>\n"
-            "    <th>Check port</th>\n"
             "  </tr>\n",
             count, ngx_http_upstream_check_shm_generation);
 
-    for (i = 0; i < peers->peers.nelts; i++) {
+    hosts_health_rbtree *health_status_tree = collectPeersStatusByHost(peers, flag);
 
-        if (flag & NGX_CHECK_STATUS_DOWN) {
+    uint cntr = 0;
+    for (ngx_uint_t i = 0; i < peers->peers.nelts; i++) {
+        ngx_str_node_t   *sn;
+        uint32_t          hash;
 
-            if (!peer[i].shm->down) {
-                continue;
-            }
+        ngx_http_upstream_srv_conf_t* up = findUpstream(peer[i].upstream_name);
+        ngx_str_t *hst = findHostname(up, peer[i].peer_addr);
+        hash = ngx_crc32_long(hst->data, hst->len);
 
-        } else if (flag & NGX_CHECK_STATUS_UP) {
-
-            if (peer[i].shm->down) {
-                continue;
-            }
+        sn = ngx_str_rbtree_lookup(&health_status_tree->tree, hst, hash);
+        if (!sn){
+          continue;
         }
-
         b->last = ngx_snprintf(b->last, b->end - b->last,
                 "  <tr%s>\n"
                 "    <td>%ui</td>\n"
                 "    <td>%V</td>\n"
                 "    <td>%V</td>\n"
                 "    <td>%s</td>\n"
-                "    <td>%ui</td>\n"
-                "    <td>%ui</td>\n"
-                "    <td>%V</td>\n"
-                "    <td>%ui</td>\n"
                 "  </tr>\n",
-                peer[i].shm->down ? " bgcolor=\"#FF0000\"" : "",
-                i,
+                sn->node.data ? " bgcolor=\"#FF0000\"" : "",
+                cntr++,
                 peer[i].upstream_name,
-                &peer[i].peer_addr->name,
-                peer[i].shm->down ? "down" : "up",
-                peer[i].shm->rise_count,
-                peer[i].shm->fall_count,
-                &peer[i].conf->check_type_conf->name,
-                peer[i].conf->port);
+                hst,
+                sn->node.data ? "down" : "up"
+                );
+        ngx_rbtree_delete(&health_status_tree->tree, &sn->node);
+        free(sn);
     }
+    free(health_status_tree);
 
     b->last = ngx_snprintf(b->last, b->end - b->last,
             "</table>\n"
@@ -2965,7 +3041,7 @@ static void
 ngx_http_upstream_check_status_json_format(ngx_buf_t *b,
     ngx_http_upstream_check_peers_t *peers, ngx_uint_t flag)
 {
-    ngx_uint_t                       count, i, last;
+    ngx_uint_t                       count, i;
     ngx_http_upstream_check_peer_t  *peer;
 
     peer = peers->peers.elts;
@@ -2990,15 +3066,19 @@ ngx_http_upstream_check_status_json_format(ngx_buf_t *b,
         count++;
     }
 
+    hosts_health_rbtree *health_status_tree = collectPeersStatusByHost(peers, flag);
     b->last = ngx_snprintf(b->last, b->end - b->last,
             "{\"servers\": {\n"
             "  \"total\": %ui,\n"
-            "  \"generation\": %ui,\n"
-            "  \"server\": [\n",
+            "  \"generation\": %ui",
             count,
             ngx_http_upstream_check_shm_generation);
 
+  #ifdef DETAILED_JSON_OUT
+    ngx_uint_t last;
     last = peers->peers.nelts - 1;
+    b->last = ngx_snprintf(b->last, b->end - b->last,
+            ", \n\"detailed\": [\n");
     for (i = 0; i < peers->peers.nelts; i++) {
 
         if (flag & NGX_CHECK_STATUS_DOWN) {
@@ -3035,6 +3115,40 @@ ngx_http_upstream_check_status_json_format(ngx_buf_t *b,
                 (i == last) ? "" : ",");
     }
 
+    b->last = ngx_snprintf(b->last, b->end - b->last,
+            "  ]");
+#endif
+    b->last = ngx_snprintf(b->last, b->end - b->last,
+            ",\n  \"brief\":[\n");
+    int cntr = 0;
+    for (i = 0; i < peers->peers.nelts; i++) {
+        ngx_str_node_t   *sn;
+        uint32_t          hash;
+
+        ngx_http_upstream_srv_conf_t* up = findUpstream(peer[i].upstream_name);
+        ngx_str_t *hst = findHostname(up, peer[i].peer_addr);
+        hash = ngx_crc32_long(hst->data, hst->len);
+
+        sn = ngx_str_rbtree_lookup(&health_status_tree->tree, hst, hash);
+        if (!sn){
+          continue;
+        }
+        ngx_rbtree_delete(&health_status_tree->tree, &sn->node);
+        b->last = ngx_snprintf(b->last, b->end - b->last,
+                "    {\"index\": %ui, "
+                "\"upstream\": \"%V\", "
+                "\"name\": \"%V\", "
+                "\"status\": \"%s\""
+                "}"
+                "%s\n",
+                cntr ++,
+                peer[i].upstream_name,
+                hst,
+                sn->node.data ? "down" : "up",
+                (health_status_tree->tree.root == &health_status_tree->sentinel) ? "": ",");
+        free(sn);
+    }
+    free(health_status_tree);
     b->last = ngx_snprintf(b->last, b->end - b->last,
             "  ]\n");
 
@@ -3556,6 +3670,7 @@ ngx_http_upstream_check_init_main_conf(ngx_conf_t *cf, void *conf)
     ngx_http_upstream_main_conf_t  *umcf;
 
     umcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_upstream_module);
+    upstream_main_conf = umcf;
 
     b = ngx_http_upstream_check_create_fastcgi_request(cf->pool,
             fastcgi_default_params,
