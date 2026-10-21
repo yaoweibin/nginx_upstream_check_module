@@ -1,0 +1,50 @@
+Runtime tests for the module built against unpatched nginx.
+
+Build nginx with the module and install it into <build>/inst, e.g.
+
+    ./configure --prefix=<build>/inst --add-dynamic-module=/path/to/module
+    make && make install
+
+then run, for each load balancing method and with/without "zone":
+
+    python3 run_test.py <build> rr|hash|chash|ip_hash|least_conn|random|random2 0|1
+
+run_test.py starts Python backends (backend.py): A is healthy, B serves
+traffic but fails /health, C is not running, D is healthy but marked
+"down" in the configuration. It checks the status page, that no request
+reaches B, C or D while they are down, that B and C get traffic again
+once they recover, backup servers, reload, and that checks keep running
+with check_keepalive_requests > 1. PORT_BASE (default 18080) moves the
+ports so several builds can be tested at once.
+
+resolve_test.py <build> (nginx 1.27.3+) uses a small DNS responder
+(dns.py). A "resolve" server whose address is not in the configuration
+must be checked as a dynamic peer: down while its backend is dead, up once
+it comes back, kept over a reload, and its check slot released once the
+name stops resolving. Another "resolve" server keeps being removed and
+re-added by the resolver, and must be marked down again each time.
+
+upsync_test.py <build> needs nginx built with nginx-upsync-module as well
+(https://github.com/weibocom/nginx-upsync-module). It serves the servers
+from a fake consul (consul.py) and checks that servers added by upsync are
+checked, that dead ones get no traffic, that they recover, that removed
+ones have their check slots released, and that state is kept over a
+reload.
+
+nginx built --with-stream also gets the stream tests, which proxy raw TCP
+to the same backends:
+
+    python3 stream_test.py <build> rr|hash|chash|least_conn|random|random2 0|1
+
+checks a stream upstream with an http check, one with a tcp check and one
+with a backup server, next to an http upstream of the same name: no
+connection reaches B, C or D while they are down, B and C get connections
+again once they recover, the status page lists the stream servers with
+"upstream_type": "stream", state is kept over a reload, and checks keep
+running with check_keepalive_requests > 1. stream_resolve_test.py (nginx
+1.27.3+) is resolve_test.py for a stream upstream, with the http block
+first, and stream_upsync_test.py is upsync_test.py for a stream upstream
+with nginx-stream-upsync-module
+(https://github.com/xiaokai-wang/nginx-stream-upsync-module).
+
+common.py holds the helpers shared by the tests other than run_test.py.

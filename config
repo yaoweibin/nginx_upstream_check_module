@@ -1,24 +1,90 @@
-ngx_feature="ngx_http_upstream_check_module"
-ngx_feature_name=
-ngx_feature_run=no
-ngx_feature_incs=
-ngx_feature_libs=""
-ngx_feature_path="$ngx_addon_dir"
-ngx_feature_deps="$ngx_addon_dir/ngx_http_upstream_check_module.h"
-ngx_check_src="$ngx_addon_dir/ngx_http_upstream_check_module.c"
-ngx_feature_test="int a;"
-. auto/feature
+ngx_addon_name=ngx_http_upstream_check_module
 
-if [ $ngx_found = yes ]; then
-    have=NGX_HTTP_UPSTREAM_CHECK . auto/have
-    CORE_INCS="$CORE_INCS $ngx_feature_path"
-    ngx_addon_name=ngx_http_upstream_check_module
-    HTTP_MODULES="$HTTP_MODULES ngx_http_upstream_check_module"
-    NGX_ADDON_DEPS="$NGX_ADDON_DEPS $ngx_feature_deps"
-    NGX_ADDON_SRCS="$NGX_ADDON_SRCS $ngx_check_src"
-else
-    cat << END
-    $0: error: the ngx_http_upstream_check_module addon error.
+# If the nginx core has been patched with one of the check_*.patch files,
+# the core balancers call into this module directly (NGX_HTTP_UPSTREAM_CHECK).
+# Otherwise the module works on stock nginx by toggling the peers' "down"
+# flag, which every built-in balancer already honours.
+
+ngx_http_upstream_check_patched=no
+
+if grep ngx_http_upstream_check_add_peer \
+        src/http/ngx_http_upstream_round_robin.c >/dev/null 2>&1
+then
+    ngx_http_upstream_check_patched=yes
+fi
+
+if [ $ngx_http_upstream_check_patched = yes ]; then
+
+    if [ "$ngx_module_link" = DYNAMIC ]; then
+        cat << END
+
+$0: error: the nginx core is patched with check_*.patch, which requires
+ngx_http_upstream_check_module to be built with --add-module.
+Use unpatched nginx sources to build it with --add-dynamic-module.
+
 END
-    exit 1
+        exit 1
+    fi
+
+    have=NGX_HTTP_UPSTREAM_CHECK . auto/have
+    CORE_INCS="$CORE_INCS $ngx_addon_dir"
+    echo " + ngx_http_upstream_check_module: using the patched nginx core"
+
+else
+    echo " + ngx_http_upstream_check_module: using stock nginx (no patch)"
+fi
+
+if test -n "$ngx_module_link"; then
+    ngx_module_type=HTTP
+    ngx_module_name=ngx_http_upstream_check_module
+    ngx_module_incs="$ngx_addon_dir"
+    ngx_module_deps="$ngx_addon_dir/ngx_http_upstream_check_module.h \
+                     $ngx_addon_dir/ngx_upstream_check.h"
+    ngx_module_srcs="$ngx_addon_dir/ngx_http_upstream_check_module.c"
+
+    . auto/module
+
+    # stream { upstream {} } checks, using the check engine of the http
+    # module: a separate dynamic module, to be loaded after the http one
+
+    ngx_http_upstream_check_stream=no
+
+    if [ $ngx_http_upstream_check_patched = yes ]; then
+        if [ "$STREAM" != NO ]; then
+            echo " + ngx_stream_upstream_check_module: skipped, it needs" \
+                 "stock nginx (no check patch)"
+        fi
+
+    elif [ "$STREAM" = YES ]; then
+        ngx_http_upstream_check_stream=yes
+
+    elif [ "$STREAM" = DYNAMIC ]; then
+        if [ "$ngx_module_link" = DYNAMIC ]; then
+            ngx_http_upstream_check_stream=yes
+        else
+            echo " + ngx_stream_upstream_check_module: skipped, the stream" \
+                 "module is dynamic: use --add-dynamic-module"
+        fi
+    fi
+
+    if [ $ngx_http_upstream_check_stream = yes ]; then
+        ngx_module_type=STREAM
+        ngx_module_name=ngx_stream_upstream_check_module
+        ngx_module_incs="$ngx_addon_dir"
+        ngx_module_deps="$ngx_addon_dir/ngx_upstream_check.h"
+        ngx_module_srcs="$ngx_addon_dir/ngx_stream_upstream_check_module.c"
+        ngx_module_libs=
+        ngx_module_order=
+
+        . auto/module
+
+        echo " + ngx_stream_upstream_check_module: enabled"
+    fi
+
+else
+    HTTP_MODULES="$HTTP_MODULES ngx_http_upstream_check_module"
+    HTTP_INCS="$HTTP_INCS $ngx_addon_dir"
+    NGX_ADDON_DEPS="$NGX_ADDON_DEPS $ngx_addon_dir/ngx_http_upstream_check_module.h"
+    NGX_ADDON_DEPS="$NGX_ADDON_DEPS $ngx_addon_dir/ngx_upstream_check.h"
+    NGX_ADDON_SRCS="$NGX_ADDON_SRCS $ngx_addon_dir/ngx_http_upstream_check_module.c"
 fi
