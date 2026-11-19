@@ -1,0 +1,18 @@
+Changes with nginx_upstream_check_module
+
+    *) Add check_1.28.0+.patch for nginx 1.28.0 to 1.29.5.
+
+    *) Add check_1.29.6+.patch for nginx 1.29.6 and later (1.30.x, 1.31.x).
+       nginx 1.29.6 changed the signature of ngx_http_upstream_get_peer().
+
+    *) Bugfix: with nginx 1.27.3+, servers added by the "resolve" parameter
+       got check_index 0 and took the health status of the first checked
+       server, which could belong to another upstream block. They are now
+       marked as not checked.
+
+    *) Bugfix: with check_1.29.6+.patch, a server chosen by the "sticky"
+       directive (nginx 1.29.6+) was used even when its health check
+       reported it down. ngx_http_upstream_get_rr_peer_by_sid() now skips it.
+
+    *) README: install example uses nginx 1.28.0, and a table maps nginx
+       versions to patches.

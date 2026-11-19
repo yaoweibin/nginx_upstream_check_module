@@ -1,7 +1,6 @@
 Name
     nginx_http_upstream_check_module - support upstream health check with
     Nginx
-    
 
 Synopsis
     http {
@@ -220,13 +219,14 @@ Installation
     github (<http://github.com/yaoweibin/nginx_upstream_check_module>)
 
     Grab the nginx source code from nginx.org (<http://nginx.org/>), for
-    example, the version 1.0.14 (see nginx compatibility), and then build
-    the source with this module:
+    example the current stable version 1.28.0 (see the patch table in the
+    Note section below to pick the right patch for your nginx version), and
+    then build the source with this module:
 
-        $ wget 'http://nginx.org/download/nginx-1.0.14.tar.gz'
-        $ tar -xzvf nginx-1.0.14.tar.gz
-        $ cd nginx-1.0.14/
-        $ patch -p1 < /path/to/nginx_http_upstream_check_module/check.patch
+        $ wget 'http://nginx.org/download/nginx-1.28.0.tar.gz'
+        $ tar -xzvf nginx-1.28.0.tar.gz
+        $ cd nginx-1.28.0/
+        $ patch -p1 < /path/to/nginx_http_upstream_check_module/check_1.28.0+.patch
 
         $ ./configure --add-module=/path/to/nginx_http_upstream_check_module
 
@@ -250,13 +250,39 @@ Note
     If you use nginx-1.7.2+, You should use the patch named
     'check_1.7.2+.patch'.
 
-    If you use nginx-1.20.1+, You should use the patch named
-    'check_1.20.1+.patch'.
+    Pick the patch whose version is the highest one that is still less than
+    or equal to your nginx version. The currently shipped patches and the
+    nginx versions they target are:
 
-    If you use nginx-1.30.4+ (the current stable branch, which merged the
-    upstream sticky 'sid' code and added per-peer locking into the round
-    robin / hash / ip_hash modules), You should use the patch named
-    'check_1.30.4+.patch'.
+        nginx version       patch
+        -------------       -----
+        1.2.1, 1.3.0        check_1.2.1.patch
+        1.2.2+, 1.3.1+      check_1.2.2+.patch
+        1.2.6+, 1.3.9+      check_1.2.6+.patch
+        1.5.12+             check_1.5.12+.patch
+        1.7.2+              check_1.7.2+.patch
+        1.7.5+              check_1.7.5+.patch
+        1.9.2+              check_1.9.2+.patch
+        1.11.1+             check_1.11.1+.patch
+        1.11.5+             check_1.11.5+.patch
+        1.12.1+             check_1.12.1+.patch
+        1.14.0+             check_1.14.0+.patch
+        1.16.1+             check_1.16.1+.patch
+        1.20.1+             check_1.20.1+.patch
+        1.28.0+             check_1.28.0+.patch
+        1.29.6+             check_1.29.6+.patch
+
+    nginx 1.29.6 changed the signature of ngx_http_upstream_get_peer(), so
+    use 'check_1.29.6+.patch' for 1.29.6 and later, including 1.30.x and
+    1.31.x.
+
+    Servers added at run time by the "resolve" parameter of the "server"
+    directive (nginx 1.27.3+) are not health checked. They are always
+    treated as up by this module.
+
+    With check_1.29.6+.patch, a server picked by the "sticky" directive
+    (nginx 1.29.6+) is skipped when its health check reports it down. The
+    "random" and "least_time" balancing methods are not covered.
 
     The patch just adds the support for the official Round-Robin, Ip_hash
     and least_conn upstream module. But it's easy to expand my module to
@@ -290,6 +316,10 @@ Compatibility
     *   The module version 0.1.5 should be compatibility with 0.7.67+
 
     *   The module version 0.1.8 should be compatibility with Nginx-1.0.14+
+
+    *   check_1.28.0+.patch: nginx 1.28.0 to 1.29.5
+
+    *   check_1.29.6+.patch: nginx 1.29.6 and later (tested up to 1.31.9)
 
 Notes
 TODO
